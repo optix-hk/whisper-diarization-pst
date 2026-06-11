@@ -30,6 +30,10 @@ from helpers import (
     write_srt,
 )
 
+from diarization import DiarizationResult
+from persistent_diarizer import PersistentSpeakerDiarizer, apply_persistent_labels
+from speaker_store import SpeakerEmbeddingStore
+
 mtypes = {"cpu": "int8", "cuda": "float16"}
 
 temp_path = os.path.join(os.getcwd(), f"temp_outputs_{os.getpid()}")
@@ -91,6 +95,33 @@ parser.add_argument(
     default="msdd",
     choices=["msdd", "sortformer"],
     help="Choose the diarization model to use",
+)
+
+parser.add_argument(
+    "--speaker-db",
+    default="~/.whisper-diarization/speakers.db",
+    help="Path to speaker profile database for persistent speaker recognition",
+)
+
+parser.add_argument(
+    "--match-threshold",
+    type=float,
+    default=0.6,
+    help="Minimum cosine similarity threshold to match a known speaker (default: 0.6)",
+)
+
+parser.add_argument(
+    "--interactive",
+    action="store_true",
+    default=False,
+    help="Prompt for new speaker names instead of auto-labeling",
+)
+
+parser.add_argument(
+    "--no-persist",
+    action="store_true",
+    default=False,
+    help="Disable persistent speaker matching (use original behavior)",
 )
 
 args = parser.parse_args()
@@ -194,11 +225,29 @@ elif args.diarizer == "sortformer":
 
     diarizer_model = SortformerDiarizer(device=args.device)
 
-speaker_ts = diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
+diarization_result = diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
+
+if isinstance(diarization_result, DiarizationResult):
+    speaker_ts = diarization_result.speaker_ts
+else:
+    speaker_ts = diarization_result
+
 del diarizer_model
 torch.cuda.empty_cache()
 
 wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
+
+if not args.no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+    store = SpeakerEmbeddingStore(args.speaker_db)
+    pd = PersistentSpeakerDiarizer(
+        store=store,
+        min_threshold=args.match_threshold,
+        interactive=args.interactive,
+    )
+    label_map = pd.resolve_speakers(diarization_result, word_speaker_mapping=wsm)
+    speaker_ts = apply_persistent_labels(speaker_ts, label_map)
+    wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
+    store.close()
 
 if info.language in punct_model_langs:
     # restoring punctuation in the transcript to help realign the sentences
