@@ -17,7 +17,9 @@ from ctc_forced_aligner import (
 )
 from deepmultilingualpunctuation import PunctuationModel
 
-from diarization import MSDDDiarizer
+from diarization import DiarizationResult, MSDDDiarizer
+from persistent_diarizer import PersistentSpeakerDiarizer, apply_persistent_labels
+from speaker_store import SpeakerEmbeddingStore
 from helpers import (
     cleanup,
     find_numeral_symbol_tokens,
@@ -36,7 +38,7 @@ from helpers import (
 def diarize_parallel(audio: torch.Tensor, device, queue: mp.Queue):
     model = MSDDDiarizer(device=device)
     result = model.diarize(audio)
-    queue.put(result)
+    queue.put({"speaker_ts": result.speaker_ts, "speaker_embeddings": result.speaker_embeddings})
 
 
 mp.set_start_method("spawn", force=True)
@@ -105,6 +107,33 @@ if __name__ == "__main__":
         default="msdd",
         choices=["msdd"],
         help="Choose the diarization model to use",
+    )
+
+    parser.add_argument(
+        "--speaker-db",
+        default="~/.whisper-diarization/speakers.db",
+        help="Path to speaker profile database for persistent speaker recognition",
+    )
+
+    parser.add_argument(
+        "--match-threshold",
+        type=float,
+        default=0.6,
+        help="Minimum cosine similarity threshold to match a known speaker (default: 0.6)",
+    )
+
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        default=False,
+        help="Prompt for new speaker names instead of auto-labeling",
+    )
+
+    parser.add_argument(
+        "--no-persist",
+        action="store_true",
+        default=False,
+        help="Disable persistent speaker matching (use original behavior)",
     )
 
     args = parser.parse_args()
@@ -214,9 +243,26 @@ if __name__ == "__main__":
     if results_queue.empty():
         raise RuntimeError("Diarization process did not return any results.")
 
-    speaker_ts = results_queue.get_nowait()
+    diarization_dict = results_queue.get_nowait()
+    speaker_ts = diarization_dict["speaker_ts"]
+    speaker_embeddings = diarization_dict.get("speaker_embeddings", {})
 
     wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
+
+    if not args.no_persist and speaker_embeddings:
+        store = SpeakerEmbeddingStore(args.speaker_db)
+        diarization_result = DiarizationResult(
+            speaker_ts=speaker_ts, speaker_embeddings=speaker_embeddings
+        )
+        pd = PersistentSpeakerDiarizer(
+            store=store,
+            min_threshold=args.match_threshold,
+            interactive=args.interactive,
+        )
+        label_map = pd.resolve_speakers(diarization_result, word_speaker_mapping=wsm)
+        speaker_ts = apply_persistent_labels(speaker_ts, label_map)
+        wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
+        store.close()
 
     if info.language in punct_model_langs:
         # restoring punctuation in the transcript to help realign the sentences
