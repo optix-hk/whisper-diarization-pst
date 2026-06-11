@@ -3,8 +3,10 @@ import os
 import tempfile
 import wave
 
-from typing import Union
+from dataclasses import dataclass
+from typing import Dict, List, Tuple, Union
 
+import numpy as np
 import torch
 
 from nemo.collections.asr.models.msdd_models import NeuralDiarizer
@@ -12,11 +14,34 @@ from nemo.collections.asr.parts.utils.speaker_utils import rttm_to_labels
 from omegaconf import OmegaConf
 
 
+@dataclass
+class DiarizationResult:
+    speaker_ts: List[Tuple[int, int, int]]
+    speaker_embeddings: Dict[int, np.ndarray]
+
+
 class MSDDDiarizer:
     def __init__(self, device: Union[str, torch.device]):
         self.model: NeuralDiarizer = NeuralDiarizer(cfg=create_config()).to(device)
 
-    def diarize(self, audio: torch.Tensor):
+    def _extract_embeddings(self) -> Dict[int, np.ndarray]:
+        speaker_embeddings = {}
+        try:
+            emb_sess = self.model.clustering_embedding.emb_sess_test_dict
+            if not emb_sess:
+                return speaker_embeddings
+            base_scale = list(emb_sess.keys())[0]
+            for uniq_name, data in emb_sess[base_scale].items():
+                avg_embs = data["avg_embs"]
+                num_speakers = avg_embs.shape[1]
+                for spk_idx in range(num_speakers):
+                    emb = avg_embs[:, spk_idx].cpu().numpy()
+                    speaker_embeddings[spk_idx] = emb
+        except (AttributeError, KeyError, IndexError):
+            pass
+        return speaker_embeddings
+
+    def diarize(self, audio: torch.Tensor) -> DiarizationResult:
         with tempfile.TemporaryDirectory() as temp_path:
             pcm = (audio.cpu().numpy() * 32768).clip(-32768, 32767).astype("int16")
             with wave.open(os.path.join(temp_path, "mono_file.wav"), "wb") as wf:
@@ -68,7 +93,9 @@ class MSDDDiarizer:
 
             labels = sorted(labels, key=lambda x: x[0])
 
-        return labels
+            speaker_embeddings = self._extract_embeddings()
+
+        return DiarizationResult(speaker_ts=labels, speaker_embeddings=speaker_embeddings)
 
 
 def create_config():
