@@ -105,6 +105,16 @@ def test_rename_speaker_nonexistent_raises(store, sample_embedding):
         store.rename_speaker("Alice", "Alicia")
 
 
+def test_rename_speaker_to_existing_name_raises(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    rng = np.random.default_rng(7)
+    bob_emb = rng.standard_normal(192).astype(np.float32)
+    bob_emb /= np.linalg.norm(bob_emb)
+    store.add_speaker("Bob", bob_emb)
+    with pytest.raises(ValueError, match="already exists"):
+        store.rename_speaker("Alice", "Bob")
+
+
 def test_delete_speaker(store, sample_embedding):
     store.add_speaker("Alice", sample_embedding)
     store.delete_speaker("Alice")
@@ -123,3 +133,55 @@ def test_list_speakers(store, sample_embedding):
     assert speakers[0]["name"] == "Alice"
     assert "created_at" in speakers[0]
     assert "updated_at" in speakers[0]
+
+
+def test_list_speakers_multiple(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    rng = np.random.default_rng(7)
+    bob_emb = rng.standard_normal(192).astype(np.float32)
+    bob_emb /= np.linalg.norm(bob_emb)
+    store.add_speaker("Bob", bob_emb)
+    speakers = store.list_speakers()
+    assert len(speakers) == 2
+    names = {s["name"] for s in speakers}
+    assert names == {"Alice", "Bob"}
+
+
+def test_update_embedding_multiple_times(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    rng = np.random.default_rng(5)
+    for i in range(3):
+        emb = rng.standard_normal(192).astype(np.float32)
+        emb /= np.linalg.norm(emb)
+        store.update_embedding("Alice", emb)
+    profiles = store.get_all_profiles()
+    assert profiles[0].sample_count == 4
+
+
+def test_find_best_match_after_update(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    rng = np.random.default_rng(3)
+    new_emb = rng.standard_normal(192).astype(np.float32)
+    new_emb /= np.linalg.norm(new_emb)
+    store.update_embedding("Alice", new_emb)
+    profiles = store.get_all_profiles()
+    query = profiles[0].embedding + rng.standard_normal(192).astype(np.float32) * 0.05
+    query /= np.linalg.norm(query)
+    name, score = store.find_best_match(query, min_threshold=0.5)
+    assert name == "Alice"
+    assert score > 0.5
+
+
+def test_context_manager(sample_embedding):
+    with SpeakerEmbeddingStore(":memory:") as store:
+        store.add_speaker("Alice", sample_embedding)
+        profiles = store.get_all_profiles()
+        assert len(profiles) == 1
+        assert profiles[0].name == "Alice"
+
+
+def test_add_speaker_wrong_dimension_raises(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    wrong_dim = np.random.default_rng(0).standard_normal(128).astype(np.float32)
+    with pytest.raises(ValueError, match="dimension must be 192"):
+        store.add_speaker("Bob", wrong_dim)
