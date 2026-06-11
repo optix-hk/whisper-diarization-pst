@@ -363,7 +363,7 @@ def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
     prev_spk = spk
 
     snts = []
-    snt = {"speaker": f"Speaker {spk}", "start_time": s, "end_time": e, "text": ""}
+    snt = {"speaker": spk if isinstance(spk, str) else f"Speaker {spk}", "start_time": s, "end_time": e, "text": ""}
 
     for wrd_dict in word_speaker_mapping:
         wrd, spk = wrd_dict["word"], wrd_dict["speaker"]
@@ -371,7 +371,7 @@ def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
         if spk != prev_spk or sentence_checker(snt["text"] + " " + wrd):
             snts.append(snt)
             snt = {
-                "speaker": f"Speaker {spk}",
+                "speaker": spk if isinstance(spk, str) else f"Speaker {spk}",
                 "start_time": s,
                 "end_time": e,
                 "text": "",
