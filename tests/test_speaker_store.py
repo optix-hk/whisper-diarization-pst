@@ -185,3 +185,38 @@ def test_add_speaker_wrong_dimension_raises(store, sample_embedding):
     wrong_dim = np.random.default_rng(0).standard_normal(128).astype(np.float32)
     with pytest.raises(ValueError, match="dimension must be 192"):
         store.add_speaker("Bob", wrong_dim)
+
+
+def test_merge_speakers(store, sample_embedding):
+    rng = np.random.default_rng(7)
+    bob_emb = rng.standard_normal(192).astype(np.float32)
+    bob_emb /= np.linalg.norm(bob_emb)
+    store.add_speaker("Alice", sample_embedding)
+    store.add_speaker("Bob", bob_emb)
+    store.merge_speakers("Bob", "Alice")
+    speakers = store.list_speakers()
+    assert len(speakers) == 1
+    assert speakers[0]["name"] == "Alice"
+    assert speakers[0]["sample_count"] == 2
+
+
+def test_merge_speakers_source_not_found(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    with pytest.raises(ValueError, match="not found"):
+        store.merge_speakers("Bob", "Alice")
+
+
+def test_merge_speakers_target_not_found(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    with pytest.raises(ValueError, match="not found"):
+        store.merge_speakers("Alice", "Bob")
+
+
+def test_rename_speaker_existing_name_suggests_merge(store, sample_embedding):
+    rng = np.random.default_rng(7)
+    bob_emb = rng.standard_normal(192).astype(np.float32)
+    bob_emb /= np.linalg.norm(bob_emb)
+    store.add_speaker("Alice", sample_embedding)
+    store.add_speaker("Bob", bob_emb)
+    with pytest.raises(ValueError, match="Use merge"):
+        store.rename_speaker("Bob", "Alice")

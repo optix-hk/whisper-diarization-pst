@@ -118,8 +118,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--match-threshold",
         type=float,
-        default=0.6,
-        help="Minimum cosine similarity threshold to match a known speaker (default: 0.6)",
+        default=0.75,
+        help="Minimum cosine similarity threshold to match a known speaker (default: 0.75)",
     )
 
     parser.add_argument(

@@ -18,8 +18,21 @@ def cmd_list(args):
 
 def cmd_rename(args):
     store = SpeakerEmbeddingStore(args.db)
-    store.rename_speaker(args.old_name, args.new_name)
-    print(f"Renamed '{args.old_name}' to '{args.new_name}'")
+    existing = {s["name"] for s in store.list_speakers()}
+    if args.new_name in existing and args.new_name != args.old_name:
+        if not args.force:
+            store.close()
+            print(
+                f"Speaker '{args.new_name}' already exists. "
+                f"Use --force to merge '{args.old_name}' into '{args.new_name}'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        store.merge_speakers(args.old_name, args.new_name)
+        print(f"Merged '{args.old_name}' into '{args.new_name}'")
+    else:
+        store.rename_speaker(args.old_name, args.new_name)
+        print(f"Renamed '{args.old_name}' to '{args.new_name}'")
     store.close()
 
 
@@ -62,6 +75,7 @@ def main():
     rename_parser = subparsers.add_parser("rename", help="Rename a speaker")
     rename_parser.add_argument("old_name", help="Current speaker name")
     rename_parser.add_argument("new_name", help="New speaker name")
+    rename_parser.add_argument("--force", action="store_true", help="Merge into existing speaker if name already exists")
 
     delete_parser = subparsers.add_parser("delete", help="Delete a speaker profile")
     delete_parser.add_argument("name", help="Speaker name to delete")

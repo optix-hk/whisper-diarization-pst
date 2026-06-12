@@ -143,6 +143,24 @@ class SpeakerEmbeddingStore:
         )
         self._conn.commit()
 
+    def merge_speakers(self, source_name: str, target_name: str):
+        source = self._get_profile_by_name(source_name)
+        target = self._get_profile_by_name(target_name)
+        if source is None:
+            raise ValueError(f"Speaker '{source_name}' not found")
+        if target is None:
+            raise ValueError(f"Speaker '{target_name}' not found")
+        merged = (target.embedding * target.sample_count + source.embedding * source.sample_count) / (
+            target.sample_count + source.sample_count
+        )
+        blob = self._serialize_embedding(merged)
+        self._conn.execute(
+            "UPDATE speakers SET embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+            (blob, target.sample_count + source.sample_count, target_name),
+        )
+        self._conn.execute("DELETE FROM speakers WHERE name = ?", (source_name,))
+        self._conn.commit()
+
     def rename_speaker(self, old_name: str, new_name: str):
         try:
             cursor = self._conn.execute(
@@ -152,7 +170,7 @@ class SpeakerEmbeddingStore:
                 raise ValueError(f"Speaker '{old_name}' not found")
             self._conn.commit()
         except sqlite3.IntegrityError:
-            raise ValueError(f"Speaker '{new_name}' already exists")
+            raise ValueError(f"Speaker '{new_name}' already exists. Use merge to combine speakers.")
 
     def delete_speaker(self, name: str):
         cursor = self._conn.execute("DELETE FROM speakers WHERE name = ?", (name,))
