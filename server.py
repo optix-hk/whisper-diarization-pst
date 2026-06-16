@@ -96,16 +96,13 @@ def load_models():
     logger.info(f"Punctuation model loaded in {time.time() - t2:.1f}s")
 
     diarizer_type = os.environ.get("DIARIZER", "msdd")
-    if os.environ.get("SKIP_DIARIZATION", "").lower() in ("1", "true", "yes"):
-        logger.info("Diarization disabled (SKIP_DIARIZATION=1)")
-    else:
-        t3 = time.time()
-        logger.info(f"Loading diarizer ({diarizer_type})...")
-        if diarizer_type == "msdd":
-            models.diarizer_model = MSDDDiarizer(device=device)
-        elif diarizer_type == "sortformer":
-            models.diarizer_model = SortformerDiarizer(device=device)
-        logger.info(f"Diarizer loaded in {time.time() - t3:.1f}s")
+    t3 = time.time()
+    logger.info(f"Loading diarizer ({diarizer_type})...")
+    if diarizer_type == "msdd":
+        models.diarizer_model = MSDDDiarizer(device=device)
+    elif diarizer_type == "sortformer":
+        models.diarizer_model = SortformerDiarizer(device=device)
+    logger.info(f"Diarizer loaded in {time.time() - t3:.1f}s")
 
     logger.info(f"All models loaded in {time.time() - t0:.1f}s")
 

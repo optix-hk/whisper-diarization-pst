@@ -79,16 +79,16 @@ Long-running HTTP service that loads all models once at startup, eliminating the
 
 Key features:
 - All models (Whisper, alignment, punctuation, diarizer) preloaded into GPU memory at startup
+- `skip_diarization` form parameter controls whether diarizer inference runs on a per-request basis
 - Non-WAV formats auto-converted to 16kHz mono WAV via ffmpeg server-side
 - `include_srt` form parameter to omit SRT from response (reduces payload size)
-- `skip_diarization` form parameter to skip diarizer inference
 - Persistent speaker matching supported via `no_persist` and `speaker_db` parameters
 - Interactive mode not available in server context (no stdin)
-- Configured via environment variables: `WHISPER_MODEL` (default: medium.en), `SKIP_DIARIZATION`, `DIARIZER`
+- Configured via environment variables: `WHISPER_MODEL` (default: medium.en), `DIARIZER` (default: msdd)
 
 Startup command:
 ```bash
-WHISPER_MODEL=tiny.en SKIP_DIARIZATION=1 python server.py
+WHISPER_MODEL=tiny.en python server.py
 ```
 
 ## Modified Files
