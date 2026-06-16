@@ -42,7 +42,9 @@ def test_get_all_profiles_empty(store):
 
 def test_find_best_match_hit(store, sample_embedding):
     store.add_speaker("Alice", sample_embedding)
-    query = sample_embedding + np.random.default_rng(0).standard_normal(192).astype(np.float32) * 0.1
+    query = (
+        sample_embedding + np.random.default_rng(0).standard_normal(192).astype(np.float32) * 0.1
+    )
     query /= np.linalg.norm(query)
     name, score = store.find_best_match(query, min_threshold=0.5)
     assert name == "Alice"
@@ -81,7 +83,9 @@ def test_find_best_match_multiple_profiles(store, sample_embedding):
 
 def test_update_embedding_running_average(store, sample_embedding):
     store.add_speaker("Alice", sample_embedding)
-    new_emb = sample_embedding + np.random.default_rng(1).standard_normal(192).astype(np.float32) * 0.1
+    new_emb = (
+        sample_embedding + np.random.default_rng(1).standard_normal(192).astype(np.float32) * 0.1
+    )
     new_emb /= np.linalg.norm(new_emb)
     store.update_embedding("Alice", new_emb)
     profiles = store.get_all_profiles()

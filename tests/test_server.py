@@ -1,18 +1,23 @@
 import io
 
-import pytest
-from fastapi.testclient import TestClient
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+from fastapi.testclient import TestClient
 
 
 @pytest.fixture
 def client():
-    with patch("server.faster_whisper"), \
-         patch("server.load_alignment_model", return_value=(MagicMock(), MagicMock())), \
-         patch("server.PunctuationModel", return_value=MagicMock()), \
-         patch("server.MSDDDiarizer", return_value=MagicMock()), \
-         patch("server.SortformerDiarizer", return_value=MagicMock()):
+    with (
+        patch("server.faster_whisper"),
+        patch("server.load_alignment_model", return_value=(MagicMock(), MagicMock())),
+        patch("server.PunctuationModel", return_value=MagicMock()),
+        patch("server.MSDDDiarizer", return_value=MagicMock()),
+        patch("server.SortformerDiarizer", return_value=MagicMock()),
+    ):
         from server import app, background_tasks, models
+
         models.whisper_model = MagicMock()
         models.whisper_pipeline = MagicMock()
         models.alignment_model = MagicMock()
@@ -51,8 +56,8 @@ def test_pending_db_updates_zero_at_rest(client):
 
 
 def test_shutdown_closes_shared_store(client):
-    from speaker_store import SpeakerEmbeddingStore
     from server import models
+    from speaker_store import SpeakerEmbeddingStore
 
     models.shared_store = SpeakerEmbeddingStore(":memory:")
 
@@ -66,6 +71,7 @@ def test_shutdown_closes_shared_store(client):
 
 def test_background_task_added_and_removed():
     import asyncio
+
     from server import background_tasks
 
     async def _run():

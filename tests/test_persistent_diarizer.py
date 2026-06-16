@@ -1,9 +1,14 @@
-import numpy as np
-import pytest
 from unittest.mock import patch
 
+import numpy as np
+import pytest
+
 from diarization.msdd.msdd import DiarizationResult
-from persistent_diarizer import PersistentSpeakerDiarizer, apply_persistent_labels, merge_new_speakers
+from persistent_diarizer import (
+    PersistentSpeakerDiarizer,
+    apply_persistent_labels,
+    merge_new_speakers,
+)
 from speaker_store import SpeakerEmbeddingStore
 
 
@@ -126,7 +131,9 @@ def test_resolve_speakers_merged_new_speakers_get_same_label(store):
     base = _make_embedding(0)
     similar = base + _make_embedding(100) * 0.05
     similar /= np.linalg.norm(similar)
-    pd = PersistentSpeakerDiarizer(store, min_threshold=0.75, interactive=False, merge_threshold=0.85)
+    pd = PersistentSpeakerDiarizer(
+        store, min_threshold=0.75, interactive=False, merge_threshold=0.85
+    )
     result = DiarizationResult(
         speaker_ts=[(0, 1000, 0), (1000, 2000, 1)],
         speaker_embeddings={0: base, 1: similar},
@@ -146,8 +153,10 @@ def test_resolve_speakers_merge_updates_existing_on_duplicate_name(store):
         speaker_ts=[(0, 1000, 0)],
         speaker_embeddings={0: new_emb},
     )
-    with patch("persistent_diarizer.input", side_effect=["Alice", "y"]), \
-         patch("persistent_diarizer.sys.stdin") as mock_stdin:
+    with (
+        patch("persistent_diarizer.input", side_effect=["Alice", "y"]),
+        patch("persistent_diarizer.sys.stdin") as mock_stdin,
+    ):
         mock_stdin.isatty.return_value = True
         label_map = pd.resolve_speakers(result)
     assert label_map[0] == "Alice"

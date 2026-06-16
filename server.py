@@ -10,8 +10,6 @@ import time
 
 import faster_whisper
 import torch
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
 
 from ctc_forced_aligner import (
     generate_emissions,
@@ -22,6 +20,8 @@ from ctc_forced_aligner import (
     preprocess_text,
 )
 from deepmultilingualpunctuation import PunctuationModel
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from pydantic import BaseModel
 
 from diarization import DiarizationResult, MSDDDiarizer, SortformerDiarizer
 from helpers import (
@@ -66,7 +66,11 @@ class Models:
         self.punct_model = None
         self.diarizer_model = None
         self.speaker_db = os.environ.get("SPEAKER_DB", "~/.whisper-diarization/speakers.db")
-        self.speaker_persistence = os.environ.get("SPEAKER_PERSISTENCE", "1").lower() not in ("0", "false", "no")
+        self.speaker_persistence = os.environ.get("SPEAKER_PERSISTENCE", "1").lower() not in (
+            "0",
+            "false",
+            "no",
+        )
         self.shared_store: SpeakerEmbeddingStore | None = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -117,7 +121,10 @@ def load_models():
     if models.speaker_persistence:
         models.shared_store = SpeakerEmbeddingStore(models.speaker_db)
         speaker_count = len(models.shared_store.list_speakers())
-        logger.info(f"Speaker persistence enabled (DB: {models.speaker_db}, {speaker_count} stored profiles)")
+        logger.info(
+            f"Speaker persistence enabled (DB: {models.speaker_db}, "
+            f"{speaker_count} stored profiles)"
+        )
     else:
         logger.info("Speaker persistence disabled (SPEAKER_PERSISTENCE=0)")
 
@@ -177,7 +184,9 @@ def _run_whisper_alignment(audio_waveform, language, batch_size, suppress_numera
 
     emissions, stride = generate_emissions(
         models.alignment_model,
-        torch.from_numpy(audio_waveform).to(models.alignment_model.dtype).to(models.alignment_model.device),
+        torch.from_numpy(audio_waveform)
+        .to(models.alignment_model.dtype)
+        .to(models.alignment_model.device),
         batch_size=batch_size,
     )
 
@@ -200,9 +209,7 @@ def _run_whisper_alignment(audio_waveform, language, batch_size, suppress_numera
 
 
 def _run_diarization(audio_waveform):
-    return models.diarizer_model.diarize(
-        torch.from_numpy(audio_waveform).unsqueeze(0)
-    )
+    return models.diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
 
 
 def _build_segments(wsm, speaker_ts, detected_language, include_srt, override_speaker=None):
@@ -251,6 +258,7 @@ def _build_segments(wsm, speaker_ts, detected_language, include_srt, override_sp
     if include_srt:
         srt_buf = io.StringIO()
         from helpers import write_srt
+
         write_srt(ssm, srt_buf)
         srt_text = srt_buf.getvalue()
 
@@ -275,7 +283,13 @@ async def transcribe(
     speaker_name: str | None = Form(None),
 ):
     if speaker_name is not None and skip_diarization:
-        raise HTTPException(status_code=400, detail="speaker_name requires skip_diarization=false (diarization runs in background to extract embedding)")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "speaker_name requires skip_diarization=false "
+                "(diarization runs in background to extract embedding)"
+            ),
+        )
 
     t_start = time.time()
     loop = asyncio.get_running_loop()
@@ -293,7 +307,19 @@ async def transcribe(
         needs_cleanup.append(wav_path)
         try:
             subprocess.run(
-                ["ffmpeg", "-y", "-i", upload_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav_path],
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    upload_path,
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-c:a",
+                    "pcm_s16le",
+                    wav_path,
+                ],
                 check=True,
                 capture_output=True,
             )
@@ -301,12 +327,16 @@ async def transcribe(
             for p in needs_cleanup:
                 if os.path.exists(p):
                     os.unlink(p)
-            raise HTTPException(status_code=500, detail="ffmpeg not found — needed to convert non-WAV audio")
+            raise HTTPException(
+                status_code=500, detail="ffmpeg not found — needed to convert non-WAV audio"
+            )
         except subprocess.CalledProcessError as e:
             for p in needs_cleanup:
                 if os.path.exists(p):
                     os.unlink(p)
-            raise HTTPException(status_code=400, detail=f"ffmpeg conversion failed: {e.stderr.decode()[:500]}")
+            raise HTTPException(
+                status_code=400, detail=f"ffmpeg conversion failed: {e.stderr.decode()[:500]}"
+            )
 
     try:
         audio_waveform = faster_whisper.decode_audio(wav_path)
@@ -328,7 +358,9 @@ async def transcribe(
         last_word_end = int(word_timestamps[-1]["end"] * 1000)
         speaker_ts = [[first_word_start, last_word_end, 0]]
         wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
-        result = _build_segments(wsm, speaker_ts, detected_language, include_srt, override_speaker=speaker_name)
+        result = _build_segments(
+            wsm, speaker_ts, detected_language, include_srt, override_speaker=speaker_name
+        )
         result.processing_time_seconds = round(time.time() - t_start, 2)
 
         async def _background_diarize():
@@ -337,7 +369,10 @@ async def transcribe(
                     diarization_result = await loop.run_in_executor(
                         None, _run_diarization, audio_waveform
                     )
-                if isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+                if (
+                    isinstance(diarization_result, DiarizationResult)
+                    and diarization_result.speaker_embeddings
+                ):
                     with db_lock:
                         if models.shared_store is not None:
                             emb = list(diarization_result.speaker_embeddings.values())[0]
@@ -368,9 +403,7 @@ async def transcribe(
         diarization_result = None
     else:
         async with diarizer_semaphore:
-            diarization_result = await loop.run_in_executor(
-                None, _run_diarization, audio_waveform
-            )
+            diarization_result = await loop.run_in_executor(None, _run_diarization, audio_waveform)
         if isinstance(diarization_result, DiarizationResult):
             speaker_ts = diarization_result.speaker_ts
         else:
@@ -378,7 +411,13 @@ async def transcribe(
 
     wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-    if models.speaker_persistence and not skip_diarization and not no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+    if (
+        models.speaker_persistence
+        and not skip_diarization
+        and not no_persist
+        and isinstance(diarization_result, DiarizationResult)
+        and diarization_result.speaker_embeddings
+    ):
         with db_lock:
             if models.shared_store is not None:
                 pd = PersistentSpeakerDiarizer(
@@ -404,4 +443,5 @@ async def transcribe(
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

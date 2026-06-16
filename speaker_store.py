@@ -1,5 +1,6 @@
 import sqlite3
 import threading
+
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -58,9 +59,7 @@ class SpeakerEmbeddingStore:
 
     def _validate_embedding(self, embedding: np.ndarray):
         if embedding.ndim != 1:
-            raise ValueError(
-                f"Embedding must be a 1D array, got {embedding.ndim}D"
-            )
+            raise ValueError(f"Embedding must be a 1D array, got {embedding.ndim}D")
         if self._embedding_dim is not None and embedding.shape[0] != self._embedding_dim:
             raise ValueError(
                 f"Embedding dimension must be {self._embedding_dim}, got {embedding.shape[0]}"
@@ -110,9 +109,7 @@ class SpeakerEmbeddingStore:
         ]
 
     def _get_profile_by_name(self, name: str) -> Optional[SpeakerProfile]:
-        row = self._conn.execute(
-            "SELECT * FROM speakers WHERE name = ?", (name,)
-        ).fetchone()
+        row = self._conn.execute("SELECT * FROM speakers WHERE name = ?", (name,)).fetchone()
         if row is None:
             return None
         return SpeakerProfile(
@@ -157,7 +154,8 @@ class SpeakerEmbeddingStore:
                 updated = (old_embedding * old_count + new_embedding) / (old_count + 1)
                 blob = self._serialize_embedding(updated)
                 self._conn.execute(
-                    "UPDATE speakers SET embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+                    "UPDATE speakers SET embedding = ?, sample_count = ?, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE name = ?",
                     (blob, old_count + 1, name),
                 )
                 self._conn.execute("COMMIT")
@@ -192,7 +190,8 @@ class SpeakerEmbeddingStore:
                 )
                 blob = self._serialize_embedding(merged)
                 self._conn.execute(
-                    "UPDATE speakers SET embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+                    "UPDATE speakers SET embedding = ?, sample_count = ?, "
+                    "updated_at = CURRENT_TIMESTAMP WHERE name = ?",
                     (blob, target_count + source_count, target_name),
                 )
                 self._conn.execute("DELETE FROM speakers WHERE name = ?", (source_name,))
@@ -212,7 +211,9 @@ class SpeakerEmbeddingStore:
                 ).fetchone()
                 if existing is not None:
                     self._conn.execute("ROLLBACK")
-                    raise ValueError(f"Speaker '{new_name}' already exists. Use merge to combine speakers.")
+                    raise ValueError(
+                        f"Speaker '{new_name}' already exists. Use merge to combine speakers."
+                    )
                 cursor = self._conn.execute(
                     "UPDATE speakers SET name = ? WHERE name = ?", (new_name, old_name)
                 )
