@@ -63,6 +63,8 @@ class Models:
         self.alignment_tokenizer = None
         self.punct_model = None
         self.diarizer_model = None
+        self.speaker_db = os.environ.get("SPEAKER_DB", "~/.whisper-diarization/speakers.db")
+        self.speaker_persistence = os.environ.get("SPEAKER_PERSISTENCE", "1").lower() not in ("0", "false", "no")
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -104,6 +106,14 @@ def load_models():
         models.diarizer_model = SortformerDiarizer(device=device)
     logger.info(f"Diarizer loaded in {time.time() - t3:.1f}s")
 
+    if models.speaker_persistence:
+        store = SpeakerEmbeddingStore(models.speaker_db)
+        speaker_count = len(store.list_speakers())
+        store.close()
+        logger.info(f"Speaker persistence enabled (DB: {models.speaker_db}, {speaker_count} stored profiles)")
+    else:
+        logger.info("Speaker persistence disabled (SPEAKER_PERSISTENCE=0)")
+
     logger.info(f"All models loaded in {time.time() - t0:.1f}s")
 
 
@@ -116,6 +126,8 @@ def health():
         "alignment_loaded": models.alignment_model is not None,
         "punct_loaded": models.punct_model is not None,
         "diarizer_loaded": models.diarizer_model is not None,
+        "speaker_persistence": models.speaker_persistence,
+        "speaker_db": models.speaker_db,
     }
 
 
@@ -127,8 +139,7 @@ def transcribe(
     suppress_numerals: bool = Form(False),
     skip_diarization: bool = Form(False),
     include_srt: bool = Form(True),
-    no_persist: bool = Form(True),
-    speaker_db: str = Form("~/.whisper-diarization/speakers.db"),
+    no_persist: bool = Form(False),
     match_threshold: float = Form(0.75),
 ):
     t_start = time.time()
@@ -232,8 +243,8 @@ def transcribe(
 
     wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-    if not skip_diarization and not no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
-        store = SpeakerEmbeddingStore(speaker_db)
+    if models.speaker_persistence and not skip_diarization and not no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+        store = SpeakerEmbeddingStore(models.speaker_db)
         pd = PersistentSpeakerDiarizer(
             store=store,
             min_threshold=match_threshold,
