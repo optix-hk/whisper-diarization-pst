@@ -200,12 +200,9 @@ def _run_whisper_alignment(audio_waveform, language, batch_size, suppress_numera
 
 
 def _run_diarization(audio_waveform):
-    diarization_result = models.diarizer_model.diarize(
+    return models.diarizer_model.diarize(
         torch.from_numpy(audio_waveform).unsqueeze(0)
     )
-    if isinstance(diarization_result, DiarizationResult):
-        return diarization_result
-    return diarization_result
 
 
 def _build_segments(wsm, speaker_ts, detected_language, include_srt, override_speaker=None):
@@ -281,7 +278,7 @@ async def transcribe(
         raise HTTPException(status_code=400, detail="speaker_name requires skip_diarization=false (diarization runs in background to extract embedding)")
 
     t_start = time.time()
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
 
     upload_ext = os.path.splitext(audio.filename)[1].lower() if audio.filename else ".wav"
     with tempfile.NamedTemporaryFile(suffix=upload_ext, delete=False) as tmp:
