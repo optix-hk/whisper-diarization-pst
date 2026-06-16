@@ -130,6 +130,13 @@ if __name__ == "__main__":
     )
 
     parser.add_argument(
+        "--skip-diarization",
+        action="store_true",
+        default=False,
+        help="Skip diarization entirely. Outputs transcription with word timestamps but no speaker labels.",
+    )
+
+    parser.add_argument(
         "--no-persist",
         action="store_true",
         default=False,
@@ -165,17 +172,18 @@ if __name__ == "__main__":
 
     audio_waveform = faster_whisper.decode_audio(vocal_target)
 
-    logging.info("Starting Nemo process with vocal_target: ", vocal_target)
-    results_queue = mp.Queue()
-    nemo_process = mp.Process(
-        target=diarize_parallel,
-        args=(
-            torch.from_numpy(audio_waveform).unsqueeze(0),
-            args.device,
-            results_queue,
-        ),
-    )
-    nemo_process.start()
+    if not args.skip_diarization:
+        logging.info("Starting Nemo process with vocal_target: ", vocal_target)
+        results_queue = mp.Queue()
+        nemo_process = mp.Process(
+            target=diarize_parallel,
+            args=(
+                torch.from_numpy(audio_waveform).unsqueeze(0),
+                args.device,
+                results_queue,
+            ),
+        )
+        nemo_process.start()
     # Transcribe the audio file
 
     whisper_model = faster_whisper.WhisperModel(
@@ -239,17 +247,23 @@ if __name__ == "__main__":
 
     word_timestamps = postprocess_results(text_starred, spans, stride, scores)
 
-    nemo_process.join()
-    if results_queue.empty():
-        raise RuntimeError("Diarization process did not return any results.")
+    if args.skip_diarization:
+        first_word_start = int(word_timestamps[0]["start"] * 1000)
+        last_word_end = int(word_timestamps[-1]["end"] * 1000)
+        speaker_ts = [[first_word_start, last_word_end, 0]]
+        speaker_embeddings = {}
+    else:
+        nemo_process.join()
+        if results_queue.empty():
+            raise RuntimeError("Diarization process did not return any results.")
 
-    diarization_dict = results_queue.get_nowait()
-    speaker_ts = diarization_dict["speaker_ts"]
-    speaker_embeddings = diarization_dict.get("speaker_embeddings", {})
+        diarization_dict = results_queue.get_nowait()
+        speaker_ts = diarization_dict["speaker_ts"]
+        speaker_embeddings = diarization_dict.get("speaker_embeddings", {})
 
     wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-    if not args.no_persist and speaker_embeddings:
+    if not args.skip_diarization and not args.no_persist and speaker_embeddings:
         store = SpeakerEmbeddingStore(args.speaker_db)
         diarization_result = DiarizationResult(
             speaker_ts=speaker_ts, speaker_embeddings=speaker_embeddings

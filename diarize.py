@@ -118,6 +118,13 @@ parser.add_argument(
 )
 
 parser.add_argument(
+    "--skip-diarization",
+    action="store_true",
+    default=False,
+    help="Skip diarization entirely. Outputs transcription with word timestamps but no speaker labels.",
+)
+
+parser.add_argument(
     "--no-persist",
     action="store_true",
     default=False,
@@ -215,29 +222,35 @@ spans = get_spans(tokens_starred, segments, blank_token)
 
 word_timestamps = postprocess_results(text_starred, spans, stride, scores)
 
-if args.diarizer == "msdd":
-    from diarization import MSDDDiarizer
-
-    diarizer_model = MSDDDiarizer(device=args.device)
-
-elif args.diarizer == "sortformer":
-    from diarization import SortformerDiarizer
-
-    diarizer_model = SortformerDiarizer(device=args.device)
-
-diarization_result = diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
-
-if isinstance(diarization_result, DiarizationResult):
-    speaker_ts = diarization_result.speaker_ts
+if args.skip_diarization:
+    first_word_start = int(word_timestamps[0]["start"] * 1000)
+    last_word_end = int(word_timestamps[-1]["end"] * 1000)
+    speaker_ts = [[first_word_start, last_word_end, 0]]
+    diarization_result = None
 else:
-    speaker_ts = diarization_result
+    if args.diarizer == "msdd":
+        from diarization import MSDDDiarizer
 
-del diarizer_model
-torch.cuda.empty_cache()
+        diarizer_model = MSDDDiarizer(device=args.device)
+
+    elif args.diarizer == "sortformer":
+        from diarization import SortformerDiarizer
+
+        diarizer_model = SortformerDiarizer(device=args.device)
+
+    diarization_result = diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
+
+    if isinstance(diarization_result, DiarizationResult):
+        speaker_ts = diarization_result.speaker_ts
+    else:
+        speaker_ts = diarization_result
+
+    del diarizer_model
+    torch.cuda.empty_cache()
 
 wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-if not args.no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+if not args.skip_diarization and not args.no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
     store = SpeakerEmbeddingStore(args.speaker_db)
     pd = PersistentSpeakerDiarizer(
         store=store,
@@ -255,7 +268,7 @@ if info.language in punct_model_langs:
 
     words_list = list(map(lambda x: x["word"], wsm))
 
-    labled_words = punct_model.predict(words_list, chunk_size=230)
+    labled_words = punct_model.predict(words_list)
 
     ending_puncts = ".?!"
     model_puncts = ".,;:!?"
