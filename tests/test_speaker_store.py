@@ -1,3 +1,5 @@
+import threading
+
 import numpy as np
 import pytest
 
@@ -220,3 +222,44 @@ def test_rename_speaker_existing_name_suggests_merge(store, sample_embedding):
     store.add_speaker("Bob", bob_emb)
     with pytest.raises(ValueError, match="Use merge"):
         store.rename_speaker("Bob", "Alice")
+
+
+def test_update_embedding_concurrent_no_lost_updates(store, sample_embedding):
+    store.add_speaker("Alice", sample_embedding)
+    num_threads = 10
+    barrier = threading.Barrier(num_threads)
+
+    def update():
+        barrier.wait()
+        store.update_embedding("Alice", sample_embedding)
+
+    threads = [threading.Thread(target=update) for _ in range(num_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    profiles = store.get_all_profiles()
+    assert profiles[0].sample_count == 1 + num_threads
+
+
+def test_add_speaker_concurrent_no_duplicate_error(store, sample_embedding):
+    num_threads = 10
+    barrier = threading.Barrier(num_threads)
+    errors = []
+
+    def add(i):
+        barrier.wait()
+        try:
+            store.add_speaker(f"Speaker_{i}", sample_embedding)
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=add, args=(i,)) for i in range(num_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors
+    assert len(store.list_speakers()) == num_threads

@@ -1,4 +1,5 @@
 import sqlite3
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -22,8 +23,9 @@ class SpeakerEmbeddingStore:
         else:
             resolved = str(Path(db_path).expanduser())
             Path(resolved).parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(resolved)
+        self._conn = sqlite3.connect(resolved, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._lock = threading.Lock()
         self._create_table()
         self._load_embedding_dim()
 
@@ -73,14 +75,25 @@ class SpeakerEmbeddingStore:
     def add_speaker(self, name: str, embedding: np.ndarray):
         self._validate_embedding(embedding)
         blob = self._serialize_embedding(embedding)
-        try:
-            self._conn.execute(
-                "INSERT INTO speakers (name, embedding) VALUES (?, ?)",
-                (name, blob),
-            )
-            self._conn.commit()
-        except sqlite3.IntegrityError:
-            raise ValueError(f"Speaker '{name}' already exists")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                existing = self._conn.execute(
+                    "SELECT 1 FROM speakers WHERE name = ?", (name,)
+                ).fetchone()
+                if existing is not None:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(f"Speaker '{name}' already exists")
+                self._conn.execute(
+                    "INSERT INTO speakers (name, embedding) VALUES (?, ?)",
+                    (name, blob),
+                )
+                self._conn.execute("COMMIT")
+            except ValueError:
+                raise
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
         if self._embedding_dim is None:
             self._embedding_dim = embedding.shape[0]
 
@@ -130,53 +143,103 @@ class SpeakerEmbeddingStore:
 
     def update_embedding(self, name: str, new_embedding: np.ndarray):
         self._validate_embedding(new_embedding)
-        profile = self._get_profile_by_name(name)
-        if profile is None:
-            raise ValueError(f"Speaker '{name}' not found")
-        updated = (profile.embedding * profile.sample_count + new_embedding) / (
-            profile.sample_count + 1
-        )
-        blob = self._serialize_embedding(updated)
-        self._conn.execute(
-            "UPDATE speakers SET embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
-            (blob, profile.sample_count + 1, name),
-        )
-        self._conn.commit()
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                row = self._conn.execute(
+                    "SELECT embedding, sample_count FROM speakers WHERE name = ?", (name,)
+                ).fetchone()
+                if row is None:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(f"Speaker '{name}' not found")
+                old_embedding = self._deserialize_embedding(row["embedding"])
+                old_count = row["sample_count"]
+                updated = (old_embedding * old_count + new_embedding) / (old_count + 1)
+                blob = self._serialize_embedding(updated)
+                self._conn.execute(
+                    "UPDATE speakers SET embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+                    (blob, old_count + 1, name),
+                )
+                self._conn.execute("COMMIT")
+            except ValueError:
+                raise
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def merge_speakers(self, source_name: str, target_name: str):
-        source = self._get_profile_by_name(source_name)
-        target = self._get_profile_by_name(target_name)
-        if source is None:
-            raise ValueError(f"Speaker '{source_name}' not found")
-        if target is None:
-            raise ValueError(f"Speaker '{target_name}' not found")
-        merged = (target.embedding * target.sample_count + source.embedding * source.sample_count) / (
-            target.sample_count + source.sample_count
-        )
-        blob = self._serialize_embedding(merged)
-        self._conn.execute(
-            "UPDATE speakers SET embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
-            (blob, target.sample_count + source.sample_count, target_name),
-        )
-        self._conn.execute("DELETE FROM speakers WHERE name = ?", (source_name,))
-        self._conn.commit()
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                source_row = self._conn.execute(
+                    "SELECT embedding, sample_count FROM speakers WHERE name = ?", (source_name,)
+                ).fetchone()
+                if source_row is None:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(f"Speaker '{source_name}' not found")
+                target_row = self._conn.execute(
+                    "SELECT embedding, sample_count FROM speakers WHERE name = ?", (target_name,)
+                ).fetchone()
+                if target_row is None:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(f"Speaker '{target_name}' not found")
+                source_emb = self._deserialize_embedding(source_row["embedding"])
+                source_count = source_row["sample_count"]
+                target_emb = self._deserialize_embedding(target_row["embedding"])
+                target_count = target_row["sample_count"]
+                merged = (target_emb * target_count + source_emb * source_count) / (
+                    target_count + source_count
+                )
+                blob = self._serialize_embedding(merged)
+                self._conn.execute(
+                    "UPDATE speakers SET embedding = ?, sample_count = ?, updated_at = CURRENT_TIMESTAMP WHERE name = ?",
+                    (blob, target_count + source_count, target_name),
+                )
+                self._conn.execute("DELETE FROM speakers WHERE name = ?", (source_name,))
+                self._conn.execute("COMMIT")
+            except ValueError:
+                raise
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def rename_speaker(self, old_name: str, new_name: str):
-        try:
-            cursor = self._conn.execute(
-                "UPDATE speakers SET name = ? WHERE name = ?", (new_name, old_name)
-            )
-            if cursor.rowcount == 0:
-                raise ValueError(f"Speaker '{old_name}' not found")
-            self._conn.commit()
-        except sqlite3.IntegrityError:
-            raise ValueError(f"Speaker '{new_name}' already exists. Use merge to combine speakers.")
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                existing = self._conn.execute(
+                    "SELECT 1 FROM speakers WHERE name = ?", (new_name,)
+                ).fetchone()
+                if existing is not None:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(f"Speaker '{new_name}' already exists. Use merge to combine speakers.")
+                cursor = self._conn.execute(
+                    "UPDATE speakers SET name = ? WHERE name = ?", (new_name, old_name)
+                )
+                if cursor.rowcount == 0:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(f"Speaker '{old_name}' not found")
+                self._conn.execute("COMMIT")
+            except ValueError:
+                raise
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def delete_speaker(self, name: str):
-        cursor = self._conn.execute("DELETE FROM speakers WHERE name = ?", (name,))
-        if cursor.rowcount == 0:
-            raise ValueError(f"Speaker '{name}' not found")
-        self._conn.commit()
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cursor = self._conn.execute("DELETE FROM speakers WHERE name = ?", (name,))
+                if cursor.rowcount == 0:
+                    self._conn.execute("ROLLBACK")
+                    raise ValueError(f"Speaker '{name}' not found")
+                self._conn.execute("COMMIT")
+            except ValueError:
+                raise
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
 
     def list_speakers(self) -> List[dict]:
         rows = self._conn.execute(
