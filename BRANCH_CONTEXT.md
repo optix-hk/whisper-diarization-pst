@@ -70,16 +70,34 @@ Also contains `apply_persistent_labels(speaker_ts, label_map)` which converts in
 
 Standalone CLI tool with subcommands: `list`, `rename <old> <new>`, `delete <name>`, `show <name>`.
 
-### server.py — FastAPI Service with Preloaded Models
+### server.py — FastAPI Service with Preloaded Models and Concurrency
 
 Long-running HTTP service that loads all models once at startup, eliminating the ~20s per-request import and model-loading overhead of the CLI scripts. Endpoints:
 
-- `GET /health` — returns model loading status and device info
+- `GET /health` — returns model loading status, device info, and `pending_db_updates` count
 - `POST /transcribe` — accepts audio file upload (WAV, MP3, OGG, etc.) and returns JSON with segments, SRT, language, and processing time
+
+Three API modes:
+
+| Mode | `skip_diarization` | `speaker_name` | Use case | Response latency |
+|------|-------------------|----------------|----------|-------------------|
+| 1. Transcribe only | `true` | — | Service testing, misc | Whisper + alignment |
+| 2. Meeting diarization | `false` | — | Meeting transcript, who said what | Whisper + alignment + diarization + DB match |
+| 3. Known speaker | `false` | `"Alice"` | STT button press, update user embedding | Whisper + alignment only (diarization + DB update runs in background) |
+
+Mode 3 responds with the transcript immediately after Whisper+alignment, using `speaker_name` for all segment labels. A background task then runs diarization and updates the speaker embedding in the DB. Providing `speaker_name` with `skip_diarization=true` is rejected (400).
+
+Concurrency safety:
+- `asyncio.Semaphore(1)` for Whisper+alignment and NeMo diarization independently — they use different GPU models and can run concurrently
+- `threading.Lock` + `BEGIN IMMEDIATE` SQLite transactions protect the shared `SpeakerEmbeddingStore` from TOCTOU races
+- GPU calls wrapped in `run_in_executor` to avoid blocking the event loop
+- Background tasks tracked in a set for graceful shutdown (cancel + 10s wait)
 
 Key features:
 - All models (Whisper, alignment, punctuation, diarizer) preloaded into GPU memory at startup
+- Single shared `SpeakerEmbeddingStore` instance (opened at startup, closed at shutdown)
 - `skip_diarization` form parameter controls whether diarizer inference runs on a per-request basis
+- `speaker_name` form parameter for Mode 3 (fast response + background embedding update)
 - Non-WAV formats auto-converted to 16kHz mono WAV via ffmpeg server-side
 - `include_srt` form parameter to omit SRT from response (reduces payload size)
 - Persistent speaker matching supported via `no_persist` and `speaker_db` parameters
@@ -121,14 +139,34 @@ WHISPER_MODEL=tiny.en python server.py
 - `diarize_parallel()` function serializes `DiarizationResult` to a plain dict before putting it in `mp.Queue` (dataclasses may not be picklable across process boundaries)
 - Main block reconstructs `DiarizationResult` from dict for persistent matching
 
+### server.py
+
+- Converted `transcribe()` to `async def` with semaphore-gated `run_in_executor` calls
+- Added `whisper_semaphore` and `diarizer_semaphore` (module-level `asyncio.Semaphore(1)`) to serialize GPU inference
+- Added `speaker_name: str | None = Form(None)` parameter for Mode 3 (known speaker)
+- Mode 3: responds immediately after Whisper+alignment with `speaker_name` as all segment labels, then runs diarization + DB update as a background task via `asyncio.create_task()`
+- Mode 2: uses shared `models.shared_store` under `db_lock` instead of creating a new `SpeakerEmbeddingStore` per request
+- Validation: `speaker_name` with `skip_diarization=true` returns 400
+- Extracted `_run_whisper_alignment()`, `_run_diarization()`, `_build_segments()` helper functions
+- `/health` endpoint now includes `pending_db_updates` (count of active background tasks)
+- Shutdown handler cancels background tasks, waits up to 10s, closes shared store
+- Uses `asyncio.get_running_loop()` instead of deprecated `get_event_loop()`
+
+### speaker_store.py
+
+- All write methods (`add_speaker`, `update_embedding`, `merge_speakers`, `rename_speaker`, `delete_speaker`) wrapped in `BEGIN IMMEDIATE` transactions to prevent TOCTOU races under concurrent access
+- Added `threading.Lock` (`self._lock`) to serialize access to the SQLite connection across threads
+- Added `check_same_thread=False` to `sqlite3.connect()` for cross-thread access
+
 ## Tests
 
-31 tests across 3 test files, all passing:
+47 tests across 4 test files, all passing:
 
-- `tests/conftest.py` — mocks NeMo/torch/omegaconf so tests run without GPU dependencies
-- `tests/test_speaker_store.py` — 20 tests: CRUD operations, cosine similarity matching, running average, dimension validation, context manager, error handling
+- `tests/conftest.py` — mocks NeMo/torch/omegaconf/faster_whisper/ctc_forced_aligner/deepmultilingualpunctuation so tests run without GPU dependencies
+- `tests/test_speaker_store.py` — 26 tests: CRUD operations, cosine similarity matching, running average, dimension validation, context manager, error handling, concurrent update (BEGIN IMMEDIATE), concurrent add
 - `tests/test_speaker_matcher.py` — 5 tests: all-known, no-match, empty store, collision resolution, multiple stored profiles
-- `tests/test_persistent_diarizer.py` — 6 tests: auto-labeling, known speaker matching, embedding updates, mixed known/new, label application, partial label maps
+- `tests/test_persistent_diarizer.py` — 10 tests: auto-labeling, known speaker matching, embedding updates, mixed known/new, label application, partial label maps, new speaker merging
+- `tests/test_server.py` — 5 tests: health endpoint fields, speaker_name+skip_diarization rejection, pending_db_updates at rest, shutdown store cleanup, background task auto-removal
 
 ## CLI Usage
 
@@ -161,6 +199,15 @@ python speakerctl.py show "Alice"
 ## Commits
 
 ```
+1228325 style: fix lint and format issues across server, store, and tests
+0a17427 test: add background task management and shutdown tests
+7e5653d test: add server integration tests for concurrency features
+f236309 fix: use asyncio.get_running_loop(), simplify _run_diarization
+b4d98af fix: Mode 3 responds before diarization, background task runs diarization+DB update
+ad18d6c feat: async transcribe endpoint with semaphores, Mode 3, and shared store
+4401219 feat: add concurrency infrastructure (semaphores, shared store, shutdown handler)
+c162d98 fix: remove unused signal import
+19e3400 fix: wrap speaker_store write methods in BEGIN IMMEDIATE transactions
 162a12b feat: add --skip-diarization flag and FastAPI server with preloaded models
 e691c66 feat: add speakerctl.py CLI tool for speaker profile management
 9b41422 feat: integrate persistent speaker matching into diarize_parallel.py
@@ -180,5 +227,6 @@ cf4725f feat: add SpeakerEmbeddingStore with SQLite-backed speaker profiles
 - The embedding extraction relies on NeMo's internal `emb_sess_test_dict` attribute, which is an implementation detail not part of NeMo's public API — it could change between NeMo versions
 - `--interactive` mode in `diarize_parallel.py` works but prompts appear after both Whisper and NeMo have finished (due to parallel execution)
 - End-to-end testing requires a GPU with NeMo installed; unit tests run without those dependencies thanks to the conftest.py mocks
-- `server.py` runs the transcribe endpoint synchronously on a single worker; concurrent requests are not supported without adding a task queue or multiple uvicorn workers
 - The server does not support `--interactive` mode (no stdin in HTTP context); new speakers are always auto-labeled
+- Mode 3 background diarization failure is logged but does not affect the already-sent response; the embedding update is simply lost
+- The server uses a single uvicorn worker; `whisper_semaphore` and `diarizer_semaphore` serialize GPU inference within that worker, but multiple workers would each load their own GPU models and DB connection
