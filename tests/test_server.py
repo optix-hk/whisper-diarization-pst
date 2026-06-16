@@ -48,3 +48,36 @@ def test_pending_db_updates_zero_at_rest(client):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json()["pending_db_updates"] == 0
+
+
+def test_shutdown_closes_shared_store(client):
+    from speaker_store import SpeakerEmbeddingStore
+    from server import models
+
+    models.shared_store = SpeakerEmbeddingStore(":memory:")
+
+    store = models.shared_store
+    assert store is not None
+
+    store.close()
+    models.shared_store = None
+    assert models.shared_store is None
+
+
+def test_background_task_added_and_removed():
+    import asyncio
+    from server import background_tasks
+
+    async def _run():
+        await asyncio.sleep(0)
+
+    loop = asyncio.new_event_loop()
+    try:
+        task = loop.create_task(_run())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+        assert task in background_tasks
+        loop.run_until_complete(task)
+        assert len(background_tasks) == 0
+    finally:
+        loop.close()
