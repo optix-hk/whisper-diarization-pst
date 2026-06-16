@@ -326,29 +326,21 @@ async def transcribe(
             None, _run_whisper_alignment, audio_waveform, language, batch_size, suppress_numerals
         )
 
-    if skip_diarization or models.diarizer_model is None:
+    if speaker_name is not None and not skip_diarization:
         first_word_start = int(word_timestamps[0]["start"] * 1000)
         last_word_end = int(word_timestamps[-1]["end"] * 1000)
         speaker_ts = [[first_word_start, last_word_end, 0]]
-        diarization_result = None
-    else:
-        async with diarizer_semaphore:
-            diarization_result = await loop.run_in_executor(
-                None, _run_diarization, audio_waveform
-            )
-        if isinstance(diarization_result, DiarizationResult):
-            speaker_ts = diarization_result.speaker_ts
-        else:
-            speaker_ts = diarization_result
-
-    if speaker_name is not None and not skip_diarization:
         wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
         result = _build_segments(wsm, speaker_ts, detected_language, include_srt, override_speaker=speaker_name)
         result.processing_time_seconds = round(time.time() - t_start, 2)
 
         async def _background_diarize():
             try:
-                if diarization_result is not None and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+                async with diarizer_semaphore:
+                    diarization_result = await loop.run_in_executor(
+                        None, _run_diarization, audio_waveform
+                    )
+                if isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
                     with db_lock:
                         if models.shared_store is not None:
                             emb = list(diarization_result.speaker_embeddings.values())[0]
@@ -371,6 +363,21 @@ async def transcribe(
         elapsed = time.time() - t_start
         logger.info(f"Transcription (mode 3) completed in {elapsed:.1f}s")
         return result
+
+    if skip_diarization or models.diarizer_model is None:
+        first_word_start = int(word_timestamps[0]["start"] * 1000)
+        last_word_end = int(word_timestamps[-1]["end"] * 1000)
+        speaker_ts = [[first_word_start, last_word_end, 0]]
+        diarization_result = None
+    else:
+        async with diarizer_semaphore:
+            diarization_result = await loop.run_in_executor(
+                None, _run_diarization, audio_waveform
+            )
+        if isinstance(diarization_result, DiarizationResult):
+            speaker_ts = diarization_result.speaker_ts
+        else:
+            speaker_ts = diarization_result
 
     wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
