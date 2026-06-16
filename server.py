@@ -57,6 +57,22 @@ class TranscriptionResult(BaseModel):
     processing_time_seconds: float
 
 
+class SpeakerInfo(BaseModel):
+    name: str
+    sample_count: int
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class SpeakerList(BaseModel):
+    speakers: list[SpeakerInfo]
+
+
+class RenameRequest(BaseModel):
+    new_name: str
+    force: bool = False
+
+
 class Models:
     def __init__(self):
         self.whisper_model = None
@@ -156,6 +172,65 @@ def health():
         "speaker_db": models.speaker_db,
         "pending_db_updates": len(background_tasks),
     }
+
+
+@app.get("/speakers", response_model=SpeakerList)
+def list_speakers():
+    if models.shared_store is None:
+        raise HTTPException(status_code=503, detail="Speaker persistence is disabled")
+    with db_lock:
+        speakers = models.shared_store.list_speakers()
+    return SpeakerList(speakers=[SpeakerInfo(**s) for s in speakers])
+
+
+@app.get("/speakers/{name}", response_model=SpeakerInfo)
+def show_speaker(name: str):
+    if models.shared_store is None:
+        raise HTTPException(status_code=503, detail="Speaker persistence is disabled")
+    with db_lock:
+        speakers = models.shared_store.list_speakers()
+    for s in speakers:
+        if s["name"] == name:
+            return SpeakerInfo(**s)
+    raise HTTPException(status_code=404, detail=f"Speaker '{name}' not found")
+
+
+@app.delete("/speakers/{name}")
+def delete_speaker(name: str):
+    if models.shared_store is None:
+        raise HTTPException(status_code=503, detail="Speaker persistence is disabled")
+    with db_lock:
+        try:
+            models.shared_store.delete_speaker(name)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+    return {"detail": f"Deleted '{name}'"}
+
+
+@app.post("/speakers/{name}/rename")
+def rename_speaker(name: str, request: RenameRequest):
+    if models.shared_store is None:
+        raise HTTPException(status_code=503, detail="Speaker persistence is disabled")
+    if name == request.new_name:
+        return {"detail": f"Speaker already named '{name}'"}
+    with db_lock:
+        try:
+            existing = {s["name"] for s in models.shared_store.list_speakers()}
+            if request.new_name in existing:
+                if not request.force:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            f"Speaker '{request.new_name}' already exists. "
+                            f"Use force=true to merge '{name}' into '{request.new_name}'."
+                        ),
+                    )
+                models.shared_store.merge_speakers(name, request.new_name)
+                return {"detail": f"Merged '{name}' into '{request.new_name}'"}
+            models.shared_store.rename_speaker(name, request.new_name)
+        except ValueError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+    return {"detail": f"Renamed '{name}' to '{request.new_name}'"}
 
 
 def _run_whisper_alignment(audio_waveform, language, batch_size, suppress_numerals):

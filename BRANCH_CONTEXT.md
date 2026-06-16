@@ -76,6 +76,12 @@ Long-running HTTP service that loads all models once at startup, eliminating the
 
 - `GET /health` — returns model loading status, device info, and `pending_db_updates` count
 - `POST /transcribe` — accepts audio file upload (WAV, MP3, OGG, etc.) and returns JSON with segments, SRT, language, and processing time
+- `GET /speakers` — list all stored speaker profiles (returns `SpeakerList` with name, sample_count, timestamps)
+- `GET /speakers/{name}` — show details for a specific speaker (404 if not found)
+- `DELETE /speakers/{name}` — delete a speaker profile (404 if not found)
+- `POST /speakers/{name}/rename` — rename a speaker; accepts JSON body `{new_name, force?}`; `force=true` merges into existing speaker instead of returning 409
+
+All speaker management endpoints use the shared `models.shared_store` with `db_lock` for thread safety, and return 503 if speaker persistence is disabled.
 
 Three API modes:
 
@@ -151,6 +157,9 @@ WHISPER_MODEL=tiny.en python server.py
 - `/health` endpoint now includes `pending_db_updates` (count of active background tasks)
 - Shutdown handler cancels background tasks, waits up to 10s, closes shared store
 - Uses `asyncio.get_running_loop()` instead of deprecated `get_event_loop()`
+- Added speaker management REST endpoints (`/speakers`, `/speakers/{name}`, `/speakers/{name}/rename`) mirroring `speakerctl.py` functionality
+- Added `SpeakerInfo`, `SpeakerList`, `RenameRequest` Pydantic models for speaker endpoint request/response schemas
+- Speaker endpoints use `db_lock` for thread safety and return 503 if speaker persistence is disabled
 
 ### speaker_store.py
 
@@ -160,13 +169,13 @@ WHISPER_MODEL=tiny.en python server.py
 
 ## Tests
 
-47 tests across 4 test files, all passing:
+58 tests across 4 test files, all passing:
 
 - `tests/conftest.py` — mocks NeMo/torch/omegaconf/faster_whisper/ctc_forced_aligner/deepmultilingualpunctuation so tests run without GPU dependencies
 - `tests/test_speaker_store.py` — 26 tests: CRUD operations, cosine similarity matching, running average, dimension validation, context manager, error handling, concurrent update (BEGIN IMMEDIATE), concurrent add
 - `tests/test_speaker_matcher.py` — 5 tests: all-known, no-match, empty store, collision resolution, multiple stored profiles
-- `tests/test_persistent_diarizer.py` — 10 tests: auto-labeling, known speaker matching, embedding updates, mixed known/new, label application, partial label maps, new speaker merging
-- `tests/test_server.py` — 5 tests: health endpoint fields, speaker_name+skip_diarization rejection, pending_db_updates at rest, shutdown store cleanup, background task auto-removal
+- `tests/test_persistent_diarizer.py` — 11 tests: auto-labeling, known speaker matching, embedding updates, mixed known/new, label application, partial label maps, new speaker merging
+- `tests/test_server.py` — 16 tests: health endpoint fields, speaker_name+skip_diarization rejection, pending_db_updates at rest, shutdown store cleanup, background task auto-removal, speaker management endpoints (list, show, delete, rename, merge with force, conflict 409, same-name no-op, 503 when persistence disabled)
 
 ## CLI Usage
 
@@ -189,11 +198,18 @@ python diarize.py -a audio.wav --skip-diarization --no-stem --whisper-model turb
 # Custom threshold and DB path
 python diarize.py -a audio.wav --match-threshold 0.7 --speaker-db ~/my-speakers.db
 
-# Manage speaker profiles
+# Manage speaker profiles (CLI)
 python speakerctl.py list
 python speakerctl.py rename "Speaker 0" "Alice"
 python speakerctl.py delete "Speaker 1"
 python speakerctl.py show "Alice"
+
+# Manage speaker profiles (HTTP API)
+curl http://localhost:8000/speakers
+curl http://localhost:8000/speakers/Alice
+curl -X DELETE http://localhost:8000/speakers/"Speaker 1"
+curl -X POST http://localhost:8000/speakers/"Speaker 0"/rename -H 'Content-Type: application/json' -d '{"new_name":"Alice"}'
+curl -X POST http://localhost:8000/speakers/"Speaker 0"/rename -H 'Content-Type: application/json' -d '{"new_name":"Bob","force":true}'
 ```
 
 ## Commits
