@@ -147,64 +147,14 @@ def health():
         "diarizer_loaded": models.diarizer_model is not None,
         "speaker_persistence": models.speaker_persistence,
         "speaker_db": models.speaker_db,
+        "pending_db_updates": len(background_tasks),
     }
 
 
-@app.post("/transcribe", response_model=TranscriptionResult)
-def transcribe(
-    audio: UploadFile = File(...),
-    language: str | None = Form(None),
-    batch_size: int = Form(8),
-    suppress_numerals: bool = Form(False),
-    skip_diarization: bool = Form(False),
-    include_srt: bool = Form(True),
-    no_persist: bool = Form(False),
-    match_threshold: float = Form(0.75),
-):
-    t_start = time.time()
-
-    upload_ext = os.path.splitext(audio.filename)[1].lower() if audio.filename else ".wav"
-    with tempfile.NamedTemporaryFile(suffix=upload_ext, delete=False) as tmp:
-        tmp.write(audio.file.read())
-        upload_path = tmp.name
-
-    wav_path = upload_path
-    needs_cleanup = [upload_path]
-
-    if upload_ext not in (".wav", ".flac"):
-        wav_path = upload_path + ".wav"
-        needs_cleanup.append(wav_path)
-        try:
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", upload_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav_path],
-                check=True,
-                capture_output=True,
-            )
-        except FileNotFoundError:
-            for p in needs_cleanup:
-                if os.path.exists(p):
-                    os.unlink(p)
-            raise HTTPException(status_code=500, detail="ffmpeg not found — needed to convert non-WAV audio")
-        except subprocess.CalledProcessError as e:
-            for p in needs_cleanup:
-                if os.path.exists(p):
-                    os.unlink(p)
-            raise HTTPException(status_code=400, detail=f"ffmpeg conversion failed: {e.stderr.decode()[:500]}")
-
-    try:
-        audio_waveform = faster_whisper.decode_audio(wav_path)
-    except Exception as e:
-        for p in needs_cleanup:
-            if os.path.exists(p):
-                os.unlink(p)
-        raise HTTPException(status_code=400, detail=f"Failed to decode audio: {e}")
-
-    logger.info(f"Audio decoded: {audio_waveform.shape}, upload took {time.time() - t_start:.1f}s")
-
+def _run_whisper_alignment(audio_waveform, language, batch_size, suppress_numerals):
     suppress_tokens = (
         find_numeral_symbol_tokens(models.whisper_model.hf_tokenizer) if suppress_numerals else [-1]
     )
-
     whisper_language = language.lower() if language else None
 
     if batch_size > 0:
@@ -246,34 +196,19 @@ def transcribe(
     spans = get_spans(tokens_starred, segments, blank_token)
     word_timestamps = postprocess_results(text_starred, spans, stride, scores)
 
-    if skip_diarization or models.diarizer_model is None:
-        first_word_start = int(word_timestamps[0]["start"] * 1000)
-        last_word_end = int(word_timestamps[-1]["end"] * 1000)
-        speaker_ts = [[first_word_start, last_word_end, 0]]
-        diarization_result = None
-    else:
-        diarization_result = models.diarizer_model.diarize(
-            torch.from_numpy(audio_waveform).unsqueeze(0)
-        )
-        if isinstance(diarization_result, DiarizationResult):
-            speaker_ts = diarization_result.speaker_ts
-        else:
-            speaker_ts = diarization_result
+    return word_timestamps, detected_language
 
-    wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-    if models.speaker_persistence and not skip_diarization and not no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
-        store = SpeakerEmbeddingStore(models.speaker_db)
-        pd = PersistentSpeakerDiarizer(
-            store=store,
-            min_threshold=match_threshold,
-            interactive=False,
-        )
-        label_map = pd.resolve_speakers(diarization_result, word_speaker_mapping=wsm)
-        speaker_ts = apply_persistent_labels(speaker_ts, label_map)
-        wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
-        store.close()
+def _run_diarization(audio_waveform):
+    diarization_result = models.diarizer_model.diarize(
+        torch.from_numpy(audio_waveform).unsqueeze(0)
+    )
+    if isinstance(diarization_result, DiarizationResult):
+        return diarization_result
+    return diarization_result
 
+
+def _build_segments(wsm, speaker_ts, detected_language, include_srt, override_speaker=None):
     if detected_language in punct_model_langs:
         words_list = [x["word"] for x in wsm]
         labeled_words = models.punct_model.predict(words_list)
@@ -294,7 +229,16 @@ def transcribe(
                 word_dict["word"] = word
 
     wsm = get_realigned_ws_mapping_with_punctuation(wsm)
+
+    if override_speaker is not None:
+        for entry in wsm:
+            entry["speaker"] = override_speaker
+
     ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
+
+    if override_speaker is not None:
+        for seg in ssm:
+            seg["speaker"] = override_speaker
 
     result_segments = [
         TranscriptionSegment(
@@ -313,19 +257,145 @@ def transcribe(
         write_srt(ssm, srt_buf)
         srt_text = srt_buf.getvalue()
 
+    return TranscriptionResult(
+        segments=result_segments,
+        srt=srt_text,
+        language=detected_language,
+        processing_time_seconds=0.0,
+    )
+
+
+@app.post("/transcribe", response_model=TranscriptionResult)
+async def transcribe(
+    audio: UploadFile = File(...),
+    language: str | None = Form(None),
+    batch_size: int = Form(8),
+    suppress_numerals: bool = Form(False),
+    skip_diarization: bool = Form(False),
+    include_srt: bool = Form(True),
+    no_persist: bool = Form(False),
+    match_threshold: float = Form(0.75),
+    speaker_name: str | None = Form(None),
+):
+    if speaker_name is not None and skip_diarization:
+        raise HTTPException(status_code=400, detail="speaker_name requires skip_diarization=false (diarization runs in background to extract embedding)")
+
+    t_start = time.time()
+    loop = asyncio.get_event_loop()
+
+    upload_ext = os.path.splitext(audio.filename)[1].lower() if audio.filename else ".wav"
+    with tempfile.NamedTemporaryFile(suffix=upload_ext, delete=False) as tmp:
+        tmp.write(audio.file.read())
+        upload_path = tmp.name
+
+    wav_path = upload_path
+    needs_cleanup = [upload_path]
+
+    if upload_ext not in (".wav", ".flac"):
+        wav_path = upload_path + ".wav"
+        needs_cleanup.append(wav_path)
+        try:
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", upload_path, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav_path],
+                check=True,
+                capture_output=True,
+            )
+        except FileNotFoundError:
+            for p in needs_cleanup:
+                if os.path.exists(p):
+                    os.unlink(p)
+            raise HTTPException(status_code=500, detail="ffmpeg not found — needed to convert non-WAV audio")
+        except subprocess.CalledProcessError as e:
+            for p in needs_cleanup:
+                if os.path.exists(p):
+                    os.unlink(p)
+            raise HTTPException(status_code=400, detail=f"ffmpeg conversion failed: {e.stderr.decode()[:500]}")
+
+    try:
+        audio_waveform = faster_whisper.decode_audio(wav_path)
+    except Exception as e:
+        for p in needs_cleanup:
+            if os.path.exists(p):
+                os.unlink(p)
+        raise HTTPException(status_code=400, detail=f"Failed to decode audio: {e}")
+
+    logger.info(f"Audio decoded: {audio_waveform.shape}, upload took {time.time() - t_start:.1f}s")
+
+    async with whisper_semaphore:
+        word_timestamps, detected_language = await loop.run_in_executor(
+            None, _run_whisper_alignment, audio_waveform, language, batch_size, suppress_numerals
+        )
+
+    if skip_diarization or models.diarizer_model is None:
+        first_word_start = int(word_timestamps[0]["start"] * 1000)
+        last_word_end = int(word_timestamps[-1]["end"] * 1000)
+        speaker_ts = [[first_word_start, last_word_end, 0]]
+        diarization_result = None
+    else:
+        async with diarizer_semaphore:
+            diarization_result = await loop.run_in_executor(
+                None, _run_diarization, audio_waveform
+            )
+        if isinstance(diarization_result, DiarizationResult):
+            speaker_ts = diarization_result.speaker_ts
+        else:
+            speaker_ts = diarization_result
+
+    if speaker_name is not None and not skip_diarization:
+        wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
+        result = _build_segments(wsm, speaker_ts, detected_language, include_srt, override_speaker=speaker_name)
+        result.processing_time_seconds = round(time.time() - t_start, 2)
+
+        async def _background_diarize():
+            try:
+                if diarization_result is not None and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+                    with db_lock:
+                        if models.shared_store is not None:
+                            emb = list(diarization_result.speaker_embeddings.values())[0]
+                            existing = models.shared_store._get_profile_by_name(speaker_name)
+                            if existing is not None:
+                                models.shared_store.update_embedding(speaker_name, emb)
+                            else:
+                                models.shared_store.add_speaker(speaker_name, emb)
+            except Exception:
+                logger.warning("Background DB update failed", exc_info=True)
+
+        task = asyncio.create_task(_background_diarize())
+        background_tasks.add(task)
+        task.add_done_callback(background_tasks.discard)
+
+        for p in needs_cleanup:
+            if os.path.exists(p):
+                os.unlink(p)
+
+        elapsed = time.time() - t_start
+        logger.info(f"Transcription (mode 3) completed in {elapsed:.1f}s")
+        return result
+
+    wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
+
+    if models.speaker_persistence and not skip_diarization and not no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+        with db_lock:
+            if models.shared_store is not None:
+                pd = PersistentSpeakerDiarizer(
+                    store=models.shared_store,
+                    min_threshold=match_threshold,
+                    interactive=False,
+                )
+                label_map = pd.resolve_speakers(diarization_result, word_speaker_mapping=wsm)
+                speaker_ts = apply_persistent_labels(speaker_ts, label_map)
+                wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
+
+    result = _build_segments(wsm, speaker_ts, detected_language, include_srt)
+    result.processing_time_seconds = round(time.time() - t_start, 2)
+
     for p in needs_cleanup:
         if os.path.exists(p):
             os.unlink(p)
 
     elapsed = time.time() - t_start
     logger.info(f"Transcription completed in {elapsed:.1f}s")
-
-    return TranscriptionResult(
-        segments=result_segments,
-        srt=srt_text,
-        language=detected_language,
-        processing_time_seconds=round(elapsed, 2),
-    )
+    return result
 
 
 if __name__ == "__main__":
