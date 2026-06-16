@@ -1,9 +1,12 @@
+import asyncio
 import io
 import logging
 import os
 import re
+import signal
 import subprocess
 import tempfile
+import threading
 import time
 
 import faster_whisper
@@ -65,10 +68,16 @@ class Models:
         self.diarizer_model = None
         self.speaker_db = os.environ.get("SPEAKER_DB", "~/.whisper-diarization/speakers.db")
         self.speaker_persistence = os.environ.get("SPEAKER_PERSISTENCE", "1").lower() not in ("0", "false", "no")
+        self.shared_store: SpeakerEmbeddingStore | None = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 models = Models()
+
+whisper_semaphore = asyncio.Semaphore(1)
+diarizer_semaphore = asyncio.Semaphore(1)
+db_lock = threading.Lock()
+background_tasks: set[asyncio.Task] = set()
 
 
 @app.on_event("startup")
@@ -107,14 +116,25 @@ def load_models():
     logger.info(f"Diarizer loaded in {time.time() - t3:.1f}s")
 
     if models.speaker_persistence:
-        store = SpeakerEmbeddingStore(models.speaker_db)
-        speaker_count = len(store.list_speakers())
-        store.close()
+        models.shared_store = SpeakerEmbeddingStore(models.speaker_db)
+        speaker_count = len(models.shared_store.list_speakers())
         logger.info(f"Speaker persistence enabled (DB: {models.speaker_db}, {speaker_count} stored profiles)")
     else:
         logger.info("Speaker persistence disabled (SPEAKER_PERSISTENCE=0)")
 
     logger.info(f"All models loaded in {time.time() - t0:.1f}s")
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    for task in background_tasks:
+        task.cancel()
+    if background_tasks:
+        await asyncio.wait(background_tasks, timeout=10.0)
+    background_tasks.clear()
+    if models.shared_store is not None:
+        models.shared_store.close()
+        models.shared_store = None
 
 
 @app.get("/health")
