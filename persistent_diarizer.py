@@ -1,19 +1,20 @@
 import sys
-from typing import Dict, List, Optional, Set, Tuple
+from collections import Counter
+from typing import Dict, List, Optional, Set
 
 import numpy as np
 
-from diarization.msdd.msdd import DiarizationResult
 from speaker_matcher import match_speakers
 from speaker_store import SpeakerEmbeddingStore
 
 
 def apply_persistent_labels(
-    speaker_ts: List[Tuple[int, int, int]], label_map: Dict[int, str]
-) -> List[Tuple[int, int, str]]:
+    speaker_ts: list[tuple[int, int, int]],
+    label_map: dict[int, str],
+) -> list[tuple[int, int, str]]:
     return [
-        (start, end, label_map.get(spk_id, spk_id))
-        for start, end, spk_id in speaker_ts
+        (start, end, label_map.get(i, str(spk_id)))
+        for i, (start, end, spk_id) in enumerate(speaker_ts)
     ]
 
 
@@ -76,52 +77,69 @@ class PersistentSpeakerDiarizer:
 
     def resolve_speakers(
         self,
-        result: DiarizationResult,
-        word_speaker_mapping: Optional[List[dict]] = None,
-    ) -> Dict[int, str]:
+        speaker_ts: list[tuple[int, int, int]],
+        segment_embeddings: list[np.ndarray | None],
+        word_speaker_mapping: list[dict] | None = None,
+    ) -> dict[int, str]:
         matches = match_speakers(
-            result.speaker_embeddings, self._store, self._min_threshold
+            segment_embeddings, self._store, self._min_threshold
         )
 
-        label_map: Dict[int, str] = {}
-        new_speakers: Dict[int, np.ndarray] = {}
-
-        for spk_id, (name, score) in matches.items():
+        label_map: dict[int, str] = {}
+        unmatched_indices: list[int] = []
+        for seg_idx, (name, score) in matches.items():
             if name is not None:
-                label_map[spk_id] = name
-                self._store.update_embedding(name, result.speaker_embeddings[spk_id])
+                label_map[seg_idx] = name
             else:
-                new_speakers[spk_id] = result.speaker_embeddings[spk_id]
+                unmatched_indices.append(seg_idx)
 
-        if new_speakers:
-            merge_map = merge_new_speakers(new_speakers, self._merge_threshold)
-            merged_label_map = self._assign_labels(
-                new_speakers, merge_map, result, word_speaker_mapping
-            )
-            label_map.update(merged_label_map)
+        still_unmatched: list[int] = []
+        for seg_idx in unmatched_indices:
+            spk_id = speaker_ts[seg_idx][2]
+            cluster_labels = [
+                label_map[i]
+                for i, (_, _, sid) in enumerate(speaker_ts)
+                if sid == spk_id and i in label_map
+            ]
+            if cluster_labels:
+                label_map[seg_idx] = Counter(cluster_labels).most_common(1)[0][0]
+            else:
+                still_unmatched.append(seg_idx)
 
-        return label_map
+        new_groups: dict[int, list[int]] = {}
+        for seg_idx in still_unmatched:
+            spk_id = speaker_ts[seg_idx][2]
+            new_groups.setdefault(spk_id, []).append(seg_idx)
 
-    def _assign_labels(
-        self,
-        new_speakers: Dict[int, np.ndarray],
-        merge_map: Dict[int, int],
-        result: DiarizationResult,
-        word_speaker_mapping: Optional[List[dict]],
-    ) -> Dict[int, str]:
+        new_speaker_embeddings: dict[int, np.ndarray] = {}
+        for spk_id, seg_indices in new_groups.items():
+            embs = [
+                segment_embeddings[i]
+                for i in seg_indices
+                if segment_embeddings[i] is not None
+            ]
+            if embs:
+                new_speaker_embeddings[spk_id] = np.mean(embs, axis=0)
+            else:
+                new_speaker_embeddings[spk_id] = np.zeros(192, dtype=np.float32)
+
+        merge_map = merge_new_speakers(new_speaker_embeddings, self._merge_threshold)
+
         existing_names = {s["name"] for s in self._store.list_speakers()}
-        assigned: Dict[int, str] = {}
+        assigned: dict[int, str] = {}
         next_num = 0
 
-        for spk_id in sorted(new_speakers.keys()):
+        for spk_id in sorted(new_groups.keys()):
             canonical = merge_map[spk_id]
             if canonical in assigned:
-                assigned[spk_id] = assigned[canonical]
+                label = assigned[canonical]
+                for seg_idx in new_groups[spk_id]:
+                    label_map[seg_idx] = label
                 continue
 
             if self._interactive:
                 chosen = self._interactive_prompt(
-                    spk_id, existing_names, next_num, result, word_speaker_mapping
+                    spk_id, existing_names, next_num, speaker_ts, word_speaker_mapping
                 )
             else:
                 chosen = self._next_available_name(existing_names, next_num)
@@ -131,30 +149,42 @@ class PersistentSpeakerDiarizer:
             existing_names.add(chosen)
             next_num += 1
 
+            for seg_idx in new_groups[spk_id]:
+                label_map[seg_idx] = chosen
+
             if chosen in {s["name"] for s in self._store.list_speakers()}:
-                self._store.update_embedding(chosen, new_speakers[spk_id])
+                self._store.update_embedding(chosen, new_speaker_embeddings[spk_id])
             else:
-                self._store.add_speaker(chosen, new_speakers[spk_id])
+                self._store.add_speaker(chosen, new_speaker_embeddings[spk_id])
 
-            for other_id in new_speakers:
+            for other_id in new_groups:
                 if other_id != spk_id and merge_map.get(other_id) == canonical:
-                    self._store.update_embedding(chosen, new_speakers[other_id])
+                    self._store.update_embedding(chosen, new_speaker_embeddings[other_id])
 
-        return assigned
+        matched_by_name: dict[str, list[np.ndarray]] = {}
+        for seg_idx, (name, _) in matches.items():
+            if name is not None and segment_embeddings[seg_idx] is not None:
+                matched_by_name.setdefault(name, []).append(segment_embeddings[seg_idx])
+
+        for name, embs in matched_by_name.items():
+            mean_emb = np.mean(embs, axis=0)
+            self._store.update_embedding(name, mean_emb)
+
+        return label_map
 
     def _interactive_prompt(
         self,
         spk_id: int,
         existing_names: Set[str],
         next_num: int,
-        result: DiarizationResult,
+        speaker_ts: list[tuple[int, int, int]],
         word_speaker_mapping: Optional[List[dict]],
     ) -> str:
         sample = ""
         if word_speaker_mapping is not None:
             sample = _get_sample_sentence(word_speaker_mapping, spk_id)
         spk_segments = [
-            (s, e) for s, e, sp in result.speaker_ts if sp == spk_id
+            (s, e) for s, e, sp in speaker_ts if sp == spk_id
         ]
         if spk_segments:
             first_seg = spk_segments[0]

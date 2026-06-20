@@ -38,7 +38,7 @@ from helpers import (
 def diarize_parallel(audio: torch.Tensor, device, queue: mp.Queue):
     model = MSDDDiarizer(device=device)
     result = model.diarize(audio)
-    queue.put({"speaker_ts": result.speaker_ts, "speaker_embeddings": result.speaker_embeddings})
+    queue.put({"speaker_ts": result.speaker_ts})
 
 
 mp.set_start_method("spawn", force=True)

@@ -27,8 +27,7 @@ def test_match_speakers_all_known(store):
     query_a /= np.linalg.norm(query_a)
     query_b = emb_b + _make_embedding(101) * 0.05
     query_b /= np.linalg.norm(query_b)
-    speaker_embeddings = {0: query_a, 1: query_b}
-    result = match_speakers(speaker_embeddings, store, min_threshold=0.6)
+    result = match_speakers([query_a, query_b], store, min_threshold=0.6)
     assert result[0][0] == "Alice"
     assert result[0][1] > 0.6
     assert result[1][0] == "Bob"
@@ -38,29 +37,35 @@ def test_match_speakers_all_known(store):
 def test_match_speakers_no_match(store):
     store.add_speaker("Alice", _make_embedding(0))
     unrelated = _make_embedding(99)
-    result = match_speakers({0: unrelated}, store, min_threshold=0.6)
+    result = match_speakers([unrelated], store, min_threshold=0.6)
     assert result[0][0] is None
     assert result[0][1] < 0.6
 
 
 def test_match_speakers_empty_store(store):
     emb = _make_embedding(0)
-    result = match_speakers({0: emb}, store, min_threshold=0.6)
+    result = match_speakers([emb], store, min_threshold=0.6)
     assert result[0][0] is None
     assert result[0][1] == 0.0
 
 
-def test_match_speakers_collision_resolved_by_score(store):
+def test_match_speakers_multiple_match_same_stored(store):
     emb_a = _make_embedding(0)
     store.add_speaker("Alice", emb_a)
-    query_close = emb_a + _make_embedding(100) * 0.05
-    query_close /= np.linalg.norm(query_close)
-    query_far = emb_a + _make_embedding(200) * 0.3
-    query_far /= np.linalg.norm(query_far)
-    speaker_embeddings = {0: query_close, 1: query_far}
-    result = match_speakers(speaker_embeddings, store, min_threshold=0.6)
+    query1 = emb_a + _make_embedding(100) * 0.05
+    query1 /= np.linalg.norm(query1)
+    query2 = emb_a + _make_embedding(101) * 0.05
+    query2 /= np.linalg.norm(query2)
+    result = match_speakers([query1, query2], store, min_threshold=0.6)
     assert result[0][0] == "Alice"
-    assert result[1][0] is None
+    assert result[1][0] == "Alice"
+
+
+def test_match_speakers_none_embedding(store):
+    store.add_speaker("Alice", _make_embedding(0))
+    result = match_speakers([None], store, min_threshold=0.6)
+    assert result[0][0] is None
+    assert result[0][1] == 0.0
 
 
 def test_match_speakers_multiple_stored(store):
@@ -69,5 +74,5 @@ def test_match_speakers_multiple_stored(store):
         store.add_speaker(name, emb)
     query = embs["Speaker_3"] + _make_embedding(300) * 0.05
     query /= np.linalg.norm(query)
-    result = match_speakers({0: query}, store, min_threshold=0.6)
+    result = match_speakers([query], store, min_threshold=0.6)
     assert result[0][0] == "Speaker_3"

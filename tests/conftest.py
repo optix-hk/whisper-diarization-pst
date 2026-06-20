@@ -2,10 +2,9 @@ import sys
 
 from dataclasses import dataclass
 from types import ModuleType
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 from unittest.mock import MagicMock
 
-import numpy as np
 import torch as _real_torch
 
 
@@ -20,7 +19,6 @@ def _make_mock_module(name, attrs=None):
 @dataclass
 class DiarizationResult:
     speaker_ts: List[Tuple[int, int, int]]
-    speaker_embeddings: Dict[int, np.ndarray]
 
 
 torch_mock = _make_mock_module(

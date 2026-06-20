@@ -4,9 +4,8 @@ import tempfile
 import wave
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple, Union
+from typing import List, Tuple, Union
 
-import numpy as np
 import torch
 
 from nemo.collections.asr.models.msdd_models import NeuralDiarizer
@@ -17,29 +16,11 @@ from omegaconf import OmegaConf
 @dataclass
 class DiarizationResult:
     speaker_ts: List[Tuple[int, int, int]]
-    speaker_embeddings: Dict[int, np.ndarray]
 
 
 class MSDDDiarizer:
     def __init__(self, device: Union[str, torch.device]):
         self.model: NeuralDiarizer = NeuralDiarizer(cfg=create_config()).to(device)
-
-    def _extract_embeddings(self, valid_speaker_ids: set) -> Dict[int, np.ndarray]:
-        speaker_embeddings = {}
-        try:
-            emb_sess = self.model.clustering_embedding.emb_sess_test_dict
-            if not emb_sess:
-                return speaker_embeddings
-            base_scale = list(emb_sess.keys())[0]
-            for uniq_name, data in emb_sess[base_scale].items():
-                avg_embs = data["avg_embs"]
-                for spk_idx in sorted(valid_speaker_ids):
-                    if spk_idx < avg_embs.shape[1]:
-                        emb = avg_embs[:, spk_idx].cpu().numpy()
-                        speaker_embeddings[spk_idx] = emb
-        except (AttributeError, KeyError, IndexError):
-            pass
-        return speaker_embeddings
 
     def diarize(self, audio: torch.Tensor) -> DiarizationResult:
         with tempfile.TemporaryDirectory() as temp_path:
@@ -93,10 +74,7 @@ class MSDDDiarizer:
 
             labels = sorted(labels, key=lambda x: x[0])
 
-            valid_speaker_ids = {sp for _, _, sp in labels}
-            speaker_embeddings = self._extract_embeddings(valid_speaker_ids)
-
-        return DiarizationResult(speaker_ts=labels, speaker_embeddings=speaker_embeddings)
+        return DiarizationResult(speaker_ts=labels)
 
 
 def create_config():
