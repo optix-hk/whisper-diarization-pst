@@ -252,7 +252,6 @@ if __name__ == "__main__":
         first_word_start = int(word_timestamps[0]["start"] * 1000)
         last_word_end = int(word_timestamps[-1]["end"] * 1000)
         speaker_ts = [[first_word_start, last_word_end, 0]]
-        speaker_embeddings = {}
     else:
         nemo_process.join()
         if results_queue.empty():
