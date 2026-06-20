@@ -16,6 +16,7 @@ def client():
         patch("server.PunctuationModel", return_value=MagicMock()),
         patch("server.MSDDDiarizer", return_value=MagicMock()),
         patch("server.SortformerDiarizer", return_value=MagicMock()),
+        patch("server.SpeakerEmbedder", return_value=MagicMock()),
     ):
         from server import app, background_tasks, models
 
@@ -25,6 +26,7 @@ def client():
         models.alignment_tokenizer = MagicMock()
         models.punct_model = MagicMock()
         models.diarizer_model = MagicMock()
+        models.embedder = MagicMock()
         models.device = "cpu"
         background_tasks.clear()
         with TestClient(app) as c:
@@ -39,6 +41,7 @@ def store_client():
         patch("server.PunctuationModel", return_value=MagicMock()),
         patch("server.MSDDDiarizer", return_value=MagicMock()),
         patch("server.SortformerDiarizer", return_value=MagicMock()),
+        patch("server.SpeakerEmbedder", return_value=MagicMock()),
     ):
         from server import app, background_tasks, models
         from speaker_store import SpeakerEmbeddingStore
@@ -49,6 +52,7 @@ def store_client():
         models.alignment_tokenizer = MagicMock()
         models.punct_model = MagicMock()
         models.diarizer_model = MagicMock()
+        models.embedder = MagicMock()
         models.device = "cpu"
         background_tasks.clear()
         with TestClient(app) as c:
@@ -70,6 +74,7 @@ def test_health_endpoint_returns_all_fields(client):
     assert "status" in data
     assert "device" in data
     assert "pending_db_updates" in data
+    assert "embedder_loaded" in data
 
 
 def test_speaker_name_with_skip_diarization_rejected(client):

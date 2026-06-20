@@ -33,6 +33,7 @@ from helpers import (
     punct_model_langs,
 )
 from persistent_diarizer import PersistentSpeakerDiarizer, apply_persistent_labels
+from speaker_embedder import SpeakerEmbedder
 from speaker_store import SpeakerEmbeddingStore
 
 logging.basicConfig(level=logging.INFO)
@@ -81,6 +82,7 @@ class Models:
         self.alignment_tokenizer = None
         self.punct_model = None
         self.diarizer_model = None
+        self.embedder: SpeakerEmbedder | None = None
         self.speaker_db = os.environ.get("SPEAKER_DB", "~/.whisper-diarization/speakers.db")
         self.speaker_persistence = os.environ.get("SPEAKER_PERSISTENCE", "1").lower() not in (
             "0",
@@ -95,6 +97,7 @@ models = Models()
 
 whisper_semaphore = asyncio.Semaphore(1)
 diarizer_semaphore = asyncio.Semaphore(1)
+embedder_semaphore = asyncio.Semaphore(1)
 db_lock = threading.Lock()
 background_tasks: set[asyncio.Task] = set()
 
@@ -135,6 +138,15 @@ def load_models():
     logger.info(f"Diarizer loaded in {time.time() - t3:.1f}s")
 
     if models.speaker_persistence:
+        t4 = time.time()
+        logger.info("Loading speaker embedder (titanet_large)...")
+        try:
+            models.embedder = SpeakerEmbedder(device=device)
+            logger.info(f"Speaker embedder loaded in {time.time() - t4:.1f}s")
+        except Exception:
+            logger.warning("Failed to load speaker embedder", exc_info=True)
+
+    if models.speaker_persistence:
         models.shared_store = SpeakerEmbeddingStore(models.speaker_db)
         speaker_count = len(models.shared_store.list_speakers())
         logger.info(
@@ -168,6 +180,7 @@ def health():
         "alignment_loaded": models.alignment_model is not None,
         "punct_loaded": models.punct_model is not None,
         "diarizer_loaded": models.diarizer_model is not None,
+        "embedder_loaded": models.embedder is not None,
         "speaker_persistence": models.speaker_persistence,
         "speaker_db": models.speaker_db,
         "pending_db_updates": len(background_tasks),
