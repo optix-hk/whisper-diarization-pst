@@ -32,6 +32,7 @@ from helpers import (
 
 from diarization import DiarizationResult
 from persistent_diarizer import PersistentSpeakerDiarizer, apply_persistent_labels
+from speaker_embedder import SpeakerEmbedder
 from speaker_store import SpeakerEmbeddingStore
 
 mtypes = {"cpu": "int8", "cuda": "float16"}
@@ -250,14 +251,21 @@ else:
 
 wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-if not args.skip_diarization and not args.no_persist and isinstance(diarization_result, DiarizationResult) and diarization_result.speaker_embeddings:
+if not args.skip_diarization and not args.no_persist and isinstance(diarization_result, DiarizationResult):
+    embedder = SpeakerEmbedder(device=args.device)
+    segment_embeddings = embedder.embed_segments(
+        torch.from_numpy(audio_waveform), speaker_ts
+    )
+    del embedder
+    torch.cuda.empty_cache()
+
     store = SpeakerEmbeddingStore(args.speaker_db)
     pd = PersistentSpeakerDiarizer(
         store=store,
         min_threshold=args.match_threshold,
         interactive=args.interactive,
     )
-    label_map = pd.resolve_speakers(diarization_result, word_speaker_mapping=wsm)
+    label_map = pd.resolve_speakers(speaker_ts, segment_embeddings, word_speaker_mapping=wsm)
     speaker_ts = apply_persistent_labels(speaker_ts, label_map)
     wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
     store.close()
