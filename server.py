@@ -307,6 +307,18 @@ def _run_diarization(audio_waveform):
     return models.diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
 
 
+def _run_embedding(audio_waveform, speaker_ts):
+    return models.embedder.embed_segments(
+        torch.from_numpy(audio_waveform), speaker_ts
+    )
+
+
+def _run_embed_clip(audio_waveform, start_ms, end_ms):
+    return models.embedder.embed_segment(
+        torch.from_numpy(audio_waveform), start_ms, end_ms
+    )
+
+
 def _build_segments(wsm, speaker_ts, detected_language, include_srt, override_speaker=None):
     if detected_language in punct_model_langs:
         words_list = [x["word"] for x in wsm]
@@ -382,7 +394,7 @@ async def transcribe(
             status_code=400,
             detail=(
                 "speaker_name requires skip_diarization=false "
-                "(diarization runs in background to extract embedding)"
+                "(speaker embedding is extracted in background)"
             ),
         )
 
@@ -458,28 +470,24 @@ async def transcribe(
         )
         result.processing_time_seconds = round(time.time() - t_start, 2)
 
-        async def _background_diarize():
+        async def _background_embed():
             try:
-                async with diarizer_semaphore:
-                    diarization_result = await loop.run_in_executor(
-                        None, _run_diarization, audio_waveform
+                async with embedder_semaphore:
+                    embedding = await loop.run_in_executor(
+                        None, _run_embed_clip, audio_waveform,
+                        first_word_start, last_word_end
                     )
-                if (
-                    isinstance(diarization_result, DiarizationResult)
-                    and diarization_result.speaker_embeddings
-                ):
-                    with db_lock:
-                        if models.shared_store is not None:
-                            emb = list(diarization_result.speaker_embeddings.values())[0]
-                            existing = models.shared_store._get_profile_by_name(speaker_name)
-                            if existing is not None:
-                                models.shared_store.update_embedding(speaker_name, emb)
-                            else:
-                                models.shared_store.add_speaker(speaker_name, emb)
+                with db_lock:
+                    if models.shared_store is not None:
+                        existing = models.shared_store._get_profile_by_name(speaker_name)
+                        if existing is not None:
+                            models.shared_store.update_embedding(speaker_name, embedding)
+                        else:
+                            models.shared_store.add_speaker(speaker_name, embedding)
             except Exception:
                 logger.warning("Background DB update failed", exc_info=True)
 
-        task = asyncio.create_task(_background_diarize())
+        task = asyncio.create_task(_background_embed())
         background_tasks.add(task)
         task.add_done_callback(background_tasks.discard)
 
@@ -510,9 +518,13 @@ async def transcribe(
         models.speaker_persistence
         and not skip_diarization
         and not no_persist
+        and models.embedder is not None
         and isinstance(diarization_result, DiarizationResult)
-        and diarization_result.speaker_embeddings
     ):
+        async with embedder_semaphore:
+            segment_embeddings = await loop.run_in_executor(
+                None, _run_embedding, audio_waveform, speaker_ts
+            )
         with db_lock:
             if models.shared_store is not None:
                 pd = PersistentSpeakerDiarizer(
@@ -520,7 +532,9 @@ async def transcribe(
                     min_threshold=match_threshold,
                     interactive=False,
                 )
-                label_map = pd.resolve_speakers(diarization_result, word_speaker_mapping=wsm)
+                label_map = pd.resolve_speakers(
+                    speaker_ts, segment_embeddings, word_speaker_mapping=wsm
+                )
                 speaker_ts = apply_persistent_labels(speaker_ts, label_map)
                 wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
