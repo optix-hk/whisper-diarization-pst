@@ -17,8 +17,9 @@ from ctc_forced_aligner import (
 )
 from deepmultilingualpunctuation import PunctuationModel
 
-from diarization import DiarizationResult, MSDDDiarizer
+from diarization import MSDDDiarizer
 from persistent_diarizer import PersistentSpeakerDiarizer, apply_persistent_labels
+from speaker_embedder import SpeakerEmbedder
 from speaker_store import SpeakerEmbeddingStore
 from helpers import (
     cleanup,
@@ -259,21 +260,24 @@ if __name__ == "__main__":
 
         diarization_dict = results_queue.get_nowait()
         speaker_ts = diarization_dict["speaker_ts"]
-        speaker_embeddings = diarization_dict.get("speaker_embeddings", {})
 
     wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
 
-    if not args.skip_diarization and not args.no_persist and speaker_embeddings:
-        store = SpeakerEmbeddingStore(args.speaker_db)
-        diarization_result = DiarizationResult(
-            speaker_ts=speaker_ts, speaker_embeddings=speaker_embeddings
+    if not args.skip_diarization and not args.no_persist:
+        embedder = SpeakerEmbedder(device=args.device)
+        segment_embeddings = embedder.embed_segments(
+            torch.from_numpy(audio_waveform), speaker_ts
         )
+        del embedder
+        torch.cuda.empty_cache()
+
+        store = SpeakerEmbeddingStore(args.speaker_db)
         pd = PersistentSpeakerDiarizer(
             store=store,
             min_threshold=args.match_threshold,
             interactive=args.interactive,
         )
-        label_map = pd.resolve_speakers(diarization_result, word_speaker_mapping=wsm)
+        label_map = pd.resolve_speakers(speaker_ts, segment_embeddings, word_speaker_mapping=wsm)
         speaker_ts = apply_persistent_labels(speaker_ts, label_map)
         wsm = get_words_speaker_mapping(word_timestamps, speaker_ts, "start")
         store.close()
