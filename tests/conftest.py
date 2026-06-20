@@ -6,6 +6,7 @@ from typing import Dict, List, Tuple
 from unittest.mock import MagicMock
 
 import numpy as np
+import torch as _real_torch
 
 
 def _make_mock_module(name, attrs=None):
@@ -33,6 +34,9 @@ torch_mock = _make_mock_module(
         "from_numpy": MagicMock,
     },
 )
+for _attr in dir(_real_torch):
+    if not _attr.startswith("_") and not hasattr(torch_mock, _attr):
+        setattr(torch_mock, _attr, getattr(_real_torch, _attr))
 sys.modules["torch"] = torch_mock
 
 for mod_name in [
@@ -53,6 +57,7 @@ for mod_name in [
 
 sys.modules["nemo.collections.asr.models"].NeuralDiarizer = MagicMock
 sys.modules["nemo.collections.asr.models"].SortformerEncLabelModel = MagicMock
+sys.modules["nemo.collections.asr.models"].EncDecSpeakerLabelModel = MagicMock
 sys.modules["nemo.collections.asr.models.msdd_models"].NeuralDiarizer = MagicMock
 sys.modules["nemo.collections.asr.parts.utils.speaker_utils"].rttm_to_labels = MagicMock
 sys.modules["nemo.collections.asr.parts.mixins.diarization"].DiarizeConfig = MagicMock
