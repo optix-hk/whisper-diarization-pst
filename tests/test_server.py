@@ -1,8 +1,8 @@
 import io
 
-import numpy as np
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 from fastapi.testclient import TestClient
@@ -230,3 +230,70 @@ def test_speakers_endpoint_503_when_disabled(client):
     models.shared_store = None
     resp = client.get("/speakers")
     assert resp.status_code == 503
+
+
+def test_mode3_updates_db_with_embedder(store_client):
+    """Mode 3: speaker_name set -> respond immediately, background embedder updates DB."""
+    import time
+
+    from server import models
+
+    fake_word_ts = [{"text": "hello", "start": 0.0, "end": 1.0}]
+    with (
+        patch("server._run_whisper_alignment", return_value=(fake_word_ts, "en")),
+        patch("server._run_embed_clip", return_value=np.zeros(192, dtype=np.float32)),
+        patch("server._run_diarization") as mock_diarize,
+    ):
+        audio_bytes = io.BytesIO(b"\x00" * 1024)
+        resp = store_client.post(
+            "/transcribe",
+            data={"speaker_name": "Alice"},
+            files={"audio": ("test.wav", audio_bytes, "audio/wav")},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert all(seg["speaker"] == "Alice" for seg in data["segments"])
+        assert mock_diarize.call_count == 0
+
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            speakers = models.shared_store.list_speakers()
+            if any(s["name"] == "Alice" for s in speakers):
+                break
+            time.sleep(0.05)
+
+    names = {s["name"] for s in models.shared_store.list_speakers()}
+    assert "Alice" in names
+
+
+def test_mode2_persistent_labels_in_response(store_client):
+    """Mode 2: diarization + per-segment embedding -> persistent labels in response."""
+    from diarization.msdd.msdd import DiarizationResult
+    from server import models
+
+    emb_alice = np.random.randn(192).astype(np.float32)
+    models.shared_store.add_speaker("Alice", emb_alice)
+
+    fake_word_ts = [
+        {"text": "hello", "start": 0.0, "end": 0.5},
+        {"text": "world", "start": 1.0, "end": 1.5},
+    ]
+    fake_speaker_ts = [(0, 500, 0), (1000, 1500, 0)]
+    fake_embeddings = [emb_alice, emb_alice]
+
+    with (
+        patch("server._run_whisper_alignment", return_value=(fake_word_ts, "en")),
+        patch(
+            "server._run_diarization",
+            return_value=DiarizationResult(speaker_ts=fake_speaker_ts),
+        ),
+        patch("server._run_embedding", return_value=fake_embeddings),
+    ):
+        audio_bytes = io.BytesIO(b"\x00" * 1024)
+        resp = store_client.post(
+            "/transcribe",
+            files={"audio": ("test.wav", audio_bytes, "audio/wav")},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert all(seg["speaker"] == "Alice" for seg in data["segments"])

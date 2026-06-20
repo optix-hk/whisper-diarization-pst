@@ -14,7 +14,7 @@ Add persistent speaker recognition to the whisper-diarization pipeline. Instead 
 
 ## Architecture
 
-Post-diarization embedding extraction and matching (Approach 1 from brainstorming). After MSDD diarization completes, per-speaker mean embeddings are extracted from NeMo's internal state (`model.clustering_embedding.emb_sess_test_dict`), compared against a persistent SQLite database, and speakers are relabeled with persistent names. The diarization pipeline itself is untouched — this is a pure post-processing layer.
+Post-diarization per-segment embedding extraction and matching. After MSDD diarization completes, a dedicated `SpeakerEmbedder` (titanet_large) extracts embeddings for each diarized segment directly from the audio waveform, compares them against a persistent SQLite database, and speakers are relabeled with persistent names. The diarization pipeline itself is untouched — this is a pure post-processing layer.
 
 MSDD backend only. Sortformer is an end-to-end model without exposed embeddings; adding an embedding model alongside it would negate its lighter footprint.
 
@@ -22,9 +22,9 @@ MSDD backend only. Sortformer is an end-to-end model without exposed embeddings;
 
 ```
 Stage 1-4: Unchanged (Source Sep → Transcription → Forced Alignment → Diarization)
-Stage 4.5 (NEW): Speaker Embedding Matching
-  ├── Extract per-speaker mean embeddings from NeMo's internal state
-  ├── Compare each mean embedding against stored profiles in SQLite
+Stage 4.5 (NEW): Per-Segment Speaker Embedding Verification
+  ├── Extract per-segment embeddings via SpeakerEmbedder (titanet_large) directly from audio
+  ├── Compare each segment embedding against stored profiles in SQLite
   ├── Match speakers above minimum cosine similarity threshold
   ├── For unmatched speakers: auto-assign label or prompt interactively
   └── Update stored profiles with matched/new embeddings
@@ -46,6 +46,15 @@ Key methods:
 - Embedding dimension validation (first speaker sets the dimension, subsequent must match)
 
 Default DB path: `~/.whisper-diarization/speakers.db` (configurable via `--speaker-db`).
+
+### speaker_embedder.py — SpeakerEmbedder
+
+Wraps NeMo's `EncDecSpeakerLabelModel` (titanet_large) to extract 192-dim speaker embeddings directly from audio segments. Key methods:
+
+- `embed_segment(audio, start_ms, end_ms)` — extracts a single embedding for a clip; pads segments shorter than 0.5s
+- `embed_segments(audio, speaker_ts)` — extracts embeddings for a list of `(start, end, spk_id)` segments; returns `None` for segments that fail
+
+Used in Mode 2 (per-segment verification after diarization) and Mode 3 (single-clip embedding for background DB update). Replaces the previous approach of extracting embeddings from NeMo's internal MSDD state.
 
 ### speaker_matcher.py — match_speakers()
 
@@ -89,18 +98,18 @@ Three API modes:
 |------|-------------------|----------------|----------|-------------------|
 | 1. Transcribe only | `true` | — | Service testing, misc | Whisper + alignment |
 | 2. Meeting diarization | `false` | — | Meeting transcript, who said what | Whisper + alignment + diarization + DB match |
-| 3. Known speaker | `false` | `"Alice"` | STT button press, update user embedding | Whisper + alignment only (diarization + DB update runs in background) |
+| 3. Known speaker | `false` | `"Alice"` | STT button press, update user embedding | Whisper + alignment only (embedding extraction + DB update runs in background) |
 
-Mode 3 responds with the transcript immediately after Whisper+alignment, using `speaker_name` for all segment labels. A background task then runs diarization and updates the speaker embedding in the DB. Providing `speaker_name` with `skip_diarization=true` is rejected (400).
+Mode 3 responds with the transcript immediately after Whisper+alignment, using `speaker_name` for all segment labels. A background task then extracts a single-clip embedding via `SpeakerEmbedder.embed_segment` and updates the speaker's profile in the DB (no diarization runs in Mode 3). Providing `speaker_name` with `skip_diarization=true` is rejected (400).
 
 Concurrency safety:
-- `asyncio.Semaphore(1)` for Whisper+alignment and NeMo diarization independently — they use different GPU models and can run concurrently
+- `asyncio.Semaphore(1)` for Whisper+alignment, NeMo diarization, and the speaker embedder independently — they use different GPU models and can run concurrently
 - `threading.Lock` + `BEGIN IMMEDIATE` SQLite transactions protect the shared `SpeakerEmbeddingStore` from TOCTOU races
 - GPU calls wrapped in `run_in_executor` to avoid blocking the event loop
 - Background tasks tracked in a set for graceful shutdown (cancel + 10s wait)
 
 Key features:
-- All models (Whisper, alignment, punctuation, diarizer) preloaded into GPU memory at startup
+- All models (Whisper, alignment, punctuation, diarizer, speaker embedder) preloaded into GPU memory at startup
 - Single shared `SpeakerEmbeddingStore` instance (opened at startup, closed at shutdown)
 - `skip_diarization` form parameter controls whether diarizer inference runs on a per-request basis
 - `speaker_name` form parameter for Mode 3 (fast response + background embedding update)
@@ -119,8 +128,7 @@ WHISPER_MODEL=tiny.en python server.py
 
 ### diarization/msdd/msdd.py
 
-- Added `DiarizationResult` dataclass with `speaker_ts` and `speaker_embeddings` fields
-- Added `_extract_embeddings()` method that reads `model.clustering_embedding.emb_sess_test_dict` (NeMo's cluster-average embeddings per speaker, shape `(192, num_speakers)`) before the temp directory is cleaned up
+- Added `DiarizationResult` dataclass with `speaker_ts` field
 - `diarize()` now returns `DiarizationResult` instead of a plain list
 
 ### diarization/__init__.py
@@ -148,13 +156,13 @@ WHISPER_MODEL=tiny.en python server.py
 ### server.py
 
 - Converted `transcribe()` to `async def` with semaphore-gated `run_in_executor` calls
-- Added `whisper_semaphore` and `diarizer_semaphore` (module-level `asyncio.Semaphore(1)`) to serialize GPU inference
+- Added `whisper_semaphore`, `diarizer_semaphore`, and `embedder_semaphore` (module-level `asyncio.Semaphore(1)`) to serialize GPU inference
 - Added `speaker_name: str | None = Form(None)` parameter for Mode 3 (known speaker)
-- Mode 3: responds immediately after Whisper+alignment with `speaker_name` as all segment labels, then runs diarization + DB update as a background task via `asyncio.create_task()`
-- Mode 2: uses shared `models.shared_store` under `db_lock` instead of creating a new `SpeakerEmbeddingStore` per request
+- Mode 3: responds immediately after Whisper+alignment with `speaker_name` as all segment labels, then runs a background task (`_background_embed`) that extracts a single-clip embedding via `SpeakerEmbedder.embed_segment` and updates the DB; guards against `models.embedder is None`
+- Mode 2: extracts per-segment embeddings via `_run_embedding` (using `embedder_semaphore`), matches against DB via `PersistentSpeakerDiarizer`, and applies persistent labels — all under `db_lock` with the shared `models.shared_store`
 - Validation: `speaker_name` with `skip_diarization=true` returns 400
-- Extracted `_run_whisper_alignment()`, `_run_diarization()`, `_build_segments()` helper functions
-- `/health` endpoint now includes `pending_db_updates` (count of active background tasks)
+- Extracted `_run_whisper_alignment()`, `_run_diarization()`, `_run_embedding()`, `_run_embed_clip()`, `_build_segments()` helper functions
+- `/health` endpoint now includes `pending_db_updates` (count of active background tasks) and `embedder_loaded`
 - Shutdown handler cancels background tasks, waits up to 10s, closes shared store
 - Uses `asyncio.get_running_loop()` instead of deprecated `get_event_loop()`
 - Added speaker management REST endpoints (`/speakers`, `/speakers/{name}`, `/speakers/{name}/rename`) mirroring `speakerctl.py` functionality
@@ -169,13 +177,14 @@ WHISPER_MODEL=tiny.en python server.py
 
 ## Tests
 
-58 tests across 4 test files, all passing:
+71 tests across 5 test files, all passing:
 
 - `tests/conftest.py` — mocks NeMo/torch/omegaconf/faster_whisper/ctc_forced_aligner/deepmultilingualpunctuation so tests run without GPU dependencies
 - `tests/test_speaker_store.py` — 26 tests: CRUD operations, cosine similarity matching, running average, dimension validation, context manager, error handling, concurrent update (BEGIN IMMEDIATE), concurrent add
-- `tests/test_speaker_matcher.py` — 5 tests: all-known, no-match, empty store, collision resolution, multiple stored profiles
-- `tests/test_persistent_diarizer.py` — 11 tests: auto-labeling, known speaker matching, embedding updates, mixed known/new, label application, partial label maps, new speaker merging
-- `tests/test_server.py` — 16 tests: health endpoint fields, speaker_name+skip_diarization rejection, pending_db_updates at rest, shutdown store cleanup, background task auto-removal, speaker management endpoints (list, show, delete, rename, merge with force, conflict 409, same-name no-op, 503 when persistence disabled)
+- `tests/test_speaker_matcher.py` — 6 tests: all-known, no-match, empty store, collision resolution, multiple stored profiles
+- `tests/test_persistent_diarizer.py` — 15 tests: auto-labeling, known speaker matching, embedding updates, mixed known/new, label application, partial label maps, new speaker merging
+- `tests/test_speaker_embedder.py` — 6 tests: embed_segment extraction, padding short segments, embed_segments batch, error handling
+- `tests/test_server.py` — 18 tests: health endpoint fields, speaker_name+skip_diarization rejection, pending_db_updates at rest, shutdown store cleanup, background task auto-removal, speaker management endpoints (list, show, delete, rename, merge with force, conflict 409, same-name no-op, 503 when persistence disabled), Mode 3 background embedder DB update, Mode 2 persistent labels in response
 
 ## CLI Usage
 
@@ -240,9 +249,9 @@ cf4725f feat: add SpeakerEmbeddingStore with SQLite-backed speaker profiles
 
 - The default cosine similarity threshold of 0.6 may need empirical tuning for real-world audio; it's configurable via `--match-threshold`
 - Running average for embeddings means stored embeddings drift from unit norm over time; `find_best_match` re-normalizes before comparison, so matching remains correct
-- The embedding extraction relies on NeMo's internal `emb_sess_test_dict` attribute, which is an implementation detail not part of NeMo's public API — it could change between NeMo versions
+- The embedding extraction uses a dedicated `SpeakerEmbedder` (titanet_large) that extracts embeddings directly from audio segments — this no longer relies on NeMo's internal `emb_sess_test_dict` attribute, making it compatible with any diarizer backend
 - `--interactive` mode in `diarize_parallel.py` works but prompts appear after both Whisper and NeMo have finished (due to parallel execution)
 - End-to-end testing requires a GPU with NeMo installed; unit tests run without those dependencies thanks to the conftest.py mocks
 - The server does not support `--interactive` mode (no stdin in HTTP context); new speakers are always auto-labeled
-- Mode 3 background diarization failure is logged but does not affect the already-sent response; the embedding update is simply lost
-- The server uses a single uvicorn worker; `whisper_semaphore` and `diarizer_semaphore` serialize GPU inference within that worker, but multiple workers would each load their own GPU models and DB connection
+- Mode 3 background embedding failure is logged but does not affect the already-sent response; the DB update is simply lost
+- The server uses a single uvicorn worker; `whisper_semaphore`, `diarizer_semaphore`, and `embedder_semaphore` serialize GPU inference within that worker, but multiple workers would each load their own GPU models and DB connection

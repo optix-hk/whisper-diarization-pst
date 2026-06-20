@@ -471,6 +471,9 @@ async def transcribe(
         result.processing_time_seconds = round(time.time() - t_start, 2)
 
         async def _background_embed():
+            if models.embedder is None:
+                logger.warning("Speaker embedder not loaded — skipping background DB update")
+                return
             try:
                 async with embedder_semaphore:
                     embedding = await loop.run_in_executor(
