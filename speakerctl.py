@@ -43,6 +43,13 @@ def cmd_delete(args):
     store.close()
 
 
+def cmd_delete_all(args):
+    store = SpeakerEmbeddingStore(args.db)
+    num_deleted = store.delete_all_speakers()
+    print(f"Deleted '{num_deleted} entries")
+    store.close()
+
+
 def cmd_show(args):
     store = SpeakerEmbeddingStore(args.db)
     speakers = store.list_speakers()
@@ -83,6 +90,8 @@ def main():
     show_parser = subparsers.add_parser("show", help="Show speaker details")
     show_parser.add_argument("name", help="Speaker name to show")
 
+    subparsers.add_parser("deleteall", help="Delete all speaker profiles")
+
     args = parser.parse_args()
 
     if args.command == "list":
@@ -93,6 +102,8 @@ def main():
         cmd_delete(args)
     elif args.command == "show":
         cmd_show(args)
+    elif args.command == "deleteall":
+        cmd_delete_all(args)
 
 
 if __name__ == "__main__":

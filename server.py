@@ -233,6 +233,13 @@ def rename_speaker(name: str, request: RenameRequest):
     return {"detail": f"Renamed '{name}' to '{request.new_name}'"}
 
 
+def delete_all_speakers():
+    if models.shared_store is None:
+        raise ValueError("Speaker persistence is disabled")
+    with db_lock:
+        return models.shared_store.delete_all_speakers()
+
+
 def _run_whisper_alignment(audio_waveform, language, batch_size, suppress_numerals):
     suppress_tokens = (
         find_numeral_symbol_tokens(models.whisper_model.hf_tokenizer) if suppress_numerals else [-1]

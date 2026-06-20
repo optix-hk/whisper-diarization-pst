@@ -242,6 +242,18 @@ class SpeakerEmbeddingStore:
                 self._conn.execute("ROLLBACK")
                 raise
 
+    def delete_all_speakers(self):
+        with self._lock:
+            try:
+                self._conn.execute("BEGIN IMMEDIATE")
+                cursor = self._conn.execute("DELETE FROM speakers")
+                count = cursor.rowcount
+                self._conn.execute("COMMIT")
+                return count
+            except Exception:
+                self._conn.execute("ROLLBACK")
+                raise
+
     def list_speakers(self) -> List[dict]:
         rows = self._conn.execute(
             "SELECT name, sample_count, created_at, updated_at FROM speakers"
