@@ -517,3 +517,27 @@ lives in this template.
 *Toggle this section off via the **Best practices** checkbox if your
 project follows different conventions.*
 <!-- myco-best-practices-end -->
+
+## 10. Always use the `whisper` conda env in this workspace
+
+Every Python / pytest / pip invocation in this repo MUST run inside the
+`whisper` conda env. Activate it before any Bash command that touches
+Python:
+
+```bash
+source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate whisper
+```
+
+Or prefix each invocation:
+
+```bash
+source "$HOME/miniconda3/etc/profile.d/conda.sh" && conda activate whisper && python -m pytest tests/
+```
+
+The env lives at `/home/optix/miniconda3/envs/whisper/` (Python 3.11) and
+contains: `nltk`, `pytest`, `numpy`, CPU-only `torch`, `fastapi`, `httpx`,
+`python-multipart`, `ruff` + NLTK `punkt`/`punkt_tab` data. It was created
+during bug-1 work; see `_myco_/` memory for history.
+
+Never use the system `python3` (3.14) for this repo — `nltk` and the
+mocked test deps are only installed in the `whisper` env.
