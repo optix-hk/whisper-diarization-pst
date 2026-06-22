@@ -380,13 +380,32 @@ def _is_cjk(ch):
 
 
 def _append_word(text, word):
-    """Append word to text, inserting a space only when neither side is CJK.
+    """Append a word token to text, respecting Whisper's word-boundary signal.
 
-    Mirrors the convention used by Whisper's own tokenizer for zh/ja/ko: no
-    space between two CJK characters and no space at CJK<->Latin boundaries.
-    Latin/digit words keep the existing single-space separator.
+    faster-whisper + ctc_forced_aligner emit per-character tokens for Latin
+    words embedded in CJK audio. Word-initial tokens carry a leading space
+    (Whisper BPE convention: ``" world"`` starts a new word; ``"o"`` is a
+    continuation of the previous token). CJK tokens have no leading space
+    because CJK doesn't use word spacing.
+
+    Rules:
+    - Token with a leading space → NEW WORD. Strip the marker, then insert
+      exactly one separator (space if neither side is CJK, per bug-1; no
+      space at CJK<->Latin boundaries).
+    - Token without a leading space → CONTINUATION (next char of the same
+      word). Append directly with no separator.
+    - Empty token after stripping the marker → no-op.
     """
-    if text and not _is_cjk(text[-1]) and not _is_cjk(word[:1]):
+    has_leading_space = word.startswith(" ")
+    word = word.lstrip(" ")
+    if not word:
+        return text
+    if not text or not has_leading_space:
+        # First token ever, or a continuation token — append directly.
+        return text + word
+    # New word. Insert a separator only when neither side is CJK
+    # (bug-1 rule: no space at CJK<->CJK or CJK<->Latin boundaries).
+    if not _is_cjk(text[-1]) and not _is_cjk(word[:1]):
         return text + " " + word
     return text + word
 

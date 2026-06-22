@@ -25,7 +25,39 @@
       },
       "description": "**Problem:** Transcripts produced via `server.py` contain spurious spaces between CJK characters (e.g. Chinese, Japanese).\n**Expected:** CJK characters in the transcript should appear without inserted spaces.\n**Actual:** Obtained transcripts currently have spaces inserted between CJK characters.\n**Context:** Reproducible via `server.py` transcript output.",
       "tags": []
+    },
+    {
+      "id": "bug-2",
+      "text": "Latin words over-spaced in CJK transcripts",
+      "layer": "Bug",
+      "done": true,
+      "addedAt": "2026-06-22T07:34:56.494Z",
+      "addedBy": "foster-chen",
+      "source": "user",
+      "voters": [
+        "foster-chen"
+      ],
+      "comments": [
+        {
+          "id": "f2ea3c445652",
+          "user": "foster-chen",
+          "text": "use whisper conda env when fixing.",
+          "ts": "2026-06-22T07:46:29.411Z"
+        },
+        {
+          "at": "2026-06-22T08:10:00.000Z",
+          "by": "claude",
+          "text": "Closed via fix commit. Root cause: bug-1's _append_word ignored Whisper's leading-space word-boundary marker, inserting a space between every pair of non-CJK tokens. Fix: _append_word now treats leading-space tokens as new words (one separator, suppressed at CJK boundaries) and bare tokens as continuations (append directly). Regression test: tests/test_helpers.py (3 new bug-2 cases + 2 bug-1 cases updated for realistic token shapes). Full suite 102/102 green."
+        }
+      ],
+      "meta": {
+        "rewriteRequested": "long",
+        "originalText": "for transcripts containing both CJK and latin characters (e.g. predominantly Chinese but also has english words and phrases), CJK character space is fixed by bug-1, but English words are spaced two spaces apart, and each latin character is spaced one space apart (e.g. if I speak \"你好世界的英文是Hello world\", the output will be \"你好世界的英文是H e l l o  w o r l d\"). Expected: latin languages properly spaced in CJK sentences (expected output should be \"你好世界的英文是Hello world\")",
+        "rewritten": true
+      },
+      "description": "**Problem:** Transcripts mixing CJK and Latin text render Latin words with characters separated by single spaces and words separated by double spaces.\n**Expected:** Latin languages properly spaced in CJK sentences (e.g. \"你好世界的英文是Hello world\").\n**Actual:** Output is \"你好世界的英文是H e l l o  w o r l d\" — each Latin character spaced one apart, words two apart.",
+      "tags": []
     }
   ],
-  "updatedAt": "2026-06-22T03:53:08.827Z"
+  "updatedAt": "2026-06-22T07:35:02.505Z"
 }
