@@ -303,8 +303,10 @@ def _run_whisper_alignment(audio_waveform, language, batch_size, suppress_numera
     return word_timestamps, detected_language
 
 
-def _run_diarization(audio_waveform):
-    return models.diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
+def _run_diarization(audio_waveform, num_speakers=None):
+    return models.diarizer_model.diarize(
+        torch.from_numpy(audio_waveform).unsqueeze(0), num_speakers=num_speakers
+    )
 
 
 def _run_embedding(audio_waveform, speaker_ts):
@@ -388,6 +390,7 @@ async def transcribe(
     no_persist: bool = Form(False),
     match_threshold: float = Form(0.75),
     speaker_name: str | None = Form(None),
+    num_speakers: int | None = Form(None),
 ):
     if speaker_name is not None and skip_diarization:
         raise HTTPException(
@@ -509,7 +512,9 @@ async def transcribe(
         diarization_result = None
     else:
         async with diarizer_semaphore:
-            diarization_result = await loop.run_in_executor(None, _run_diarization, audio_waveform)
+            diarization_result = await loop.run_in_executor(
+                None, _run_diarization, audio_waveform, num_speakers
+            )
         if isinstance(diarization_result, DiarizationResult):
             speaker_ts = diarization_result.speaker_ts
         else:

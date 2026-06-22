@@ -36,9 +36,9 @@ from helpers import (
 )
 
 
-def diarize_parallel(audio: torch.Tensor, device, queue: mp.Queue):
+def diarize_parallel(audio: torch.Tensor, device, queue: mp.Queue, num_speakers=None):
     model = MSDDDiarizer(device=device)
-    result = model.diarize(audio)
+    result = model.diarize(audio, num_speakers=num_speakers)
     queue.put({"speaker_ts": result.speaker_ts})
 
 
@@ -144,6 +144,13 @@ if __name__ == "__main__":
         help="Disable persistent speaker matching (use original behavior)",
     )
 
+    parser.add_argument(
+        "--num-speakers",
+        type=int,
+        default=None,
+        help="Number of speakers in the audio (oracle). If omitted, the diarizer estimates automatically.",
+    )
+
     args = parser.parse_args()
     language = process_language_arg(args.language, args.model_name)
 
@@ -182,6 +189,7 @@ if __name__ == "__main__":
                 torch.from_numpy(audio_waveform).unsqueeze(0),
                 args.device,
                 results_queue,
+                args.num_speakers,
             ),
         )
         nemo_process.start()

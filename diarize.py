@@ -132,6 +132,13 @@ parser.add_argument(
     help="Disable persistent speaker matching (use original behavior)",
 )
 
+parser.add_argument(
+    "--num-speakers",
+    type=int,
+    default=None,
+    help="Number of speakers in the audio (oracle). If omitted, the diarizer estimates automatically.",
+)
+
 args = parser.parse_args()
 language = process_language_arg(args.language, args.model_name)
 
@@ -239,7 +246,9 @@ else:
 
         diarizer_model = SortformerDiarizer(device=args.device)
 
-    diarization_result = diarizer_model.diarize(torch.from_numpy(audio_waveform).unsqueeze(0))
+    diarization_result = diarizer_model.diarize(
+        torch.from_numpy(audio_waveform).unsqueeze(0), num_speakers=args.num_speakers
+    )
 
     if isinstance(diarization_result, DiarizationResult):
         speaker_ts = diarization_result.speaker_ts

@@ -27,7 +27,7 @@ class SortformerDiarizer:
 
         self.model.eval()
 
-    def diarize(self, audio: torch.Tensor):
+    def diarize(self, audio: torch.Tensor, num_speakers: int | None = None):
         with torch.inference_mode():
             processed_signal, processed_signal_length = self.model.process_signal(
                 audio_signal=audio,

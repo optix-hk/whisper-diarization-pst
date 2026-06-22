@@ -22,7 +22,9 @@ class MSDDDiarizer:
     def __init__(self, device: Union[str, torch.device]):
         self.model: NeuralDiarizer = NeuralDiarizer(cfg=create_config()).to(device)
 
-    def diarize(self, audio: torch.Tensor) -> DiarizationResult:
+    def diarize(
+        self, audio: torch.Tensor, num_speakers: int | None = None
+    ) -> DiarizationResult:
         with tempfile.TemporaryDirectory() as temp_path:
             pcm = (audio.cpu().numpy() * 32768).clip(-32768, 32767).astype("int16")
             with wave.open(os.path.join(temp_path, "mono_file.wav"), "wb") as wf:
@@ -48,7 +50,7 @@ class MSDDDiarizer:
             self.model._initialize_configs(
                 manifest_path=manifest_path,
                 max_speakers=8,
-                num_speakers=None,
+                num_speakers=num_speakers,
                 tmpdir=temp_path,
                 batch_size=24,
                 num_workers=0,
