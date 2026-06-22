@@ -4,14 +4,20 @@
       "id": "bug-1",
       "text": "Remove spaces inserted between CJK characters in transcript output",
       "layer": "Bug",
-      "done": false,
+      "done": true,
       "addedAt": "2026-06-22T03:52:58.609Z",
       "addedBy": "foster-chen",
       "source": "user",
       "voters": [
         "foster-chen"
       ],
-      "comments": [],
+      "comments": [
+        {
+          "at": "2026-06-22T04:30:00.000Z",
+          "by": "claude",
+          "text": "Closed via commit 9bebc5d. Root cause: helpers.py:381 unconditionally appended `wrd + \" \"` after every word. Fix: added _is_cjk + _append_word helpers, CJK-aware join. Regression test: tests/test_helpers.py (26 cases). Full suite 97/97 green."
+        }
+      ],
       "meta": {
         "rewriteRequested": "long",
         "originalText": "remove spaces from transcript containing CJK characters. Currently, obtained transcript using server.py have spaces between CJK characters (e.g. Chinese, Japanese)",
