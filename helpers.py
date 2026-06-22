@@ -357,6 +357,40 @@ def get_realigned_ws_mapping_with_punctuation(word_speaker_mapping, max_words_in
     return realigned_list
 
 
+def _is_cjk(ch):
+    """Return True if ch is a CJK character or CJK punctuation.
+
+    Covers Hiragana, Katakana, Hangul, CJK Unified Ideographs (+ Ext A),
+    CJK Compatibility Ideographs, and CJK Symbols & Punctuation. CJK writing
+    systems do not use inter-word spaces, so the sentence builder uses this
+    to decide whether to insert a separator between two tokens.
+    """
+    if not ch:
+        return False
+    code = ord(ch)
+    return (
+        0x3000 <= code <= 0x303F  # CJK Symbols & Punctuation (、。 etc.)
+        or 0x3040 <= code <= 0x309F  # Hiragana
+        or 0x30A0 <= code <= 0x30FF  # Katakana
+        or 0x3400 <= code <= 0x4DBF  # CJK Unified Ideographs Extension A
+        or 0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
+        or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
+        or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
+    )
+
+
+def _append_word(text, word):
+    """Append word to text, inserting a space only when neither side is CJK.
+
+    Mirrors the convention used by Whisper's own tokenizer for zh/ja/ko: no
+    space between two CJK characters and no space at CJK<->Latin boundaries.
+    Latin/digit words keep the existing single-space separator.
+    """
+    if text and not _is_cjk(text[-1]) and not _is_cjk(word[:1]):
+        return text + " " + word
+    return text + word
+
+
 def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
     sentence_checker = nltk.tokenize.PunktSentenceTokenizer().text_contains_sentbreak
     s, e, spk = spk_ts[0]
@@ -378,7 +412,7 @@ def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
             }
         else:
             snt["end_time"] = e
-        snt["text"] += wrd + " "
+        snt["text"] = _append_word(snt["text"], wrd)
         prev_spk = spk
 
     snts.append(snt)

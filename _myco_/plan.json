@@ -1,0 +1,25 @@
+{
+  "items": [
+    {
+      "id": "bug-1",
+      "text": "Remove spaces inserted between CJK characters in transcript output",
+      "layer": "Bug",
+      "done": false,
+      "addedAt": "2026-06-22T03:52:58.609Z",
+      "addedBy": "foster-chen",
+      "source": "user",
+      "voters": [
+        "foster-chen"
+      ],
+      "comments": [],
+      "meta": {
+        "rewriteRequested": "long",
+        "originalText": "remove spaces from transcript containing CJK characters. Currently, obtained transcript using server.py have spaces between CJK characters (e.g. Chinese, Japanese)",
+        "rewritten": true
+      },
+      "description": "**Problem:** Transcripts produced via `server.py` contain spurious spaces between CJK characters (e.g. Chinese, Japanese).\n**Expected:** CJK characters in the transcript should appear without inserted spaces.\n**Actual:** Obtained transcripts currently have spaces inserted between CJK characters.\n**Context:** Reproducible via `server.py` transcript output.",
+      "tags": []
+    }
+  ],
+  "updatedAt": "2026-06-22T03:53:08.827Z"
+}
