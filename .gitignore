@@ -6,4 +6,5 @@ __pycache__/
 *.m4a
 nemo_cache/
 *.log
+.vscode
 
