@@ -357,60 +357,24 @@ def get_realigned_ws_mapping_with_punctuation(word_speaker_mapping, max_words_in
     return realigned_list
 
 
-def _is_cjk(ch):
-    """Return True if ch is a CJK character or CJK punctuation.
+def _append_word(text, word, detected_language):
+    """Append a word token to text with CJK-aware spacing.
 
-    Covers Hiragana, Katakana, Hangul, CJK Unified Ideographs (+ Ext A),
-    CJK Compatibility Ideographs, and CJK Symbols & Punctuation. CJK writing
-    systems do not use inter-word spaces, so the sentence builder uses this
-    to decide whether to insert a separator between two tokens.
+    ctc_forced_aligner splits text differently depending on language:
+    - CJK languages (zh, ja): split_size="char" → list(text), so each
+      character is its own token. Word boundaries between Latin words appear
+      as standalone " " space tokens.
+    - Non-CJK languages: split_size="word" → text.split(), so each token is
+      a bare whole word with no leading/trailing spaces.
     """
-    if not ch:
-        return False
-    code = ord(ch)
-    return (
-        0x3000 <= code <= 0x303F  # CJK Symbols & Punctuation (、。 etc.)
-        or 0x3040 <= code <= 0x309F  # Hiragana
-        or 0x30A0 <= code <= 0x30FF  # Katakana
-        or 0x3400 <= code <= 0x4DBF  # CJK Unified Ideographs Extension A
-        or 0x4E00 <= code <= 0x9FFF  # CJK Unified Ideographs
-        or 0xAC00 <= code <= 0xD7AF  # Hangul Syllables
-        or 0xF900 <= code <= 0xFAFF  # CJK Compatibility Ideographs
-    )
 
-
-def _append_word(text, word):
-    """Append a word token to text, respecting Whisper's word-boundary signal.
-
-    faster-whisper + ctc_forced_aligner emit per-character tokens for Latin
-    words embedded in CJK audio. Word-initial tokens carry a leading space
-    (Whisper BPE convention: ``" world"`` starts a new word; ``"o"`` is a
-    continuation of the previous token). CJK tokens have no leading space
-    because CJK doesn't use word spacing.
-
-    Rules:
-    - Token with a leading space → NEW WORD. Strip the marker, then insert
-      exactly one separator (space if neither side is CJK, per bug-1; no
-      space at CJK<->Latin boundaries).
-    - Token without a leading space → CONTINUATION (next char of the same
-      word). Append directly with no separator.
-    - Empty token after stripping the marker → no-op.
-    """
-    has_leading_space = word.startswith(" ")
-    word = word.lstrip(" ")
-    if not word:
-        return text
-    if not text or not has_leading_space:
-        # First token ever, or a continuation token — append directly.
+    if not text or not word:
         return text + word
-    # New word. Insert a separator only when neither side is CJK
-    # (bug-1 rule: no space at CJK<->CJK or CJK<->Latin boundaries).
-    if not _is_cjk(text[-1]) and not _is_cjk(word[:1]):
-        return text + " " + word
-    return text + word
+    is_char_split = detected_language in ("zh", "ja")
+    return text + word if is_char_split else text + " " + word
 
 
-def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
+def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts, detected_language):
     sentence_checker = nltk.tokenize.PunktSentenceTokenizer().text_contains_sentbreak
     s, e, spk = spk_ts[0]
     prev_spk = spk
@@ -431,7 +395,7 @@ def get_sentences_speaker_mapping(word_speaker_mapping, spk_ts):
             }
         else:
             snt["end_time"] = e
-        snt["text"] = _append_word(snt["text"], wrd)
+        snt["text"] = _append_word(snt["text"], wrd, detected_language)
         prev_spk = spk
 
     snts.append(snt)

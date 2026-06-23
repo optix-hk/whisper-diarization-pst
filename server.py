@@ -347,7 +347,7 @@ def _build_segments(wsm, speaker_ts, detected_language, include_srt, override_sp
         for entry in wsm:
             entry["speaker"] = override_speaker
 
-    ssm = get_sentences_speaker_mapping(wsm, speaker_ts)
+    ssm = get_sentences_speaker_mapping(wsm, speaker_ts, detected_language)
 
     if override_speaker is not None:
         for seg in ssm:
